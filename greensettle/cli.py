@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from greensettle.agent import lhm_client
+from greensettle.agent import meter
 from greensettle.agent.lhm_client import LhmClient, LhmError
 
 log = logging.getLogger("greensettle")
@@ -76,6 +77,22 @@ def cmd_dump_powers(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# calibrate-idle
+# --------------------------------------------------------------------------
+def cmd_calibrate_idle(args: argparse.Namespace) -> int:
+    client = LhmClient(args.url)
+    client.package_watts()  # fail fast with a clear message before waiting N seconds
+    config = meter.MeterConfig(poll_interval_s=args.interval)
+    path = Path(args.data_dir) / "idle.json"
+    print(f"Measuring idle power for {args.seconds:g} s. Please leave the machine alone...")
+    idle = meter.calibrate_idle(client.package_watts, args.seconds, config, path)
+    print(f"Idle CPU Package: mean {idle.mean_w:.2f} W, std dev {idle.std_w:.2f} W "
+          f"({idle.samples} samples over {idle.seconds:.1f} s)")
+    print(f"Saved to {path}")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # Argument parsing
 # --------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
@@ -85,6 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"LHM data.json URL (default: ${lhm_client.URL_ENV_VAR} or {lhm_client.DEFAULT_URL})",
     )
+    parser.add_argument("--data-dir", default="data", help="where idle.json and measurements go")
+    parser.add_argument("--interval", type=float, default=1.0, help="sensor poll interval in seconds")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -95,6 +114,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--file", help="read a saved data.json instead of the live server")
     p.add_argument("--save", help="also save the full data.json to this path")
     p.set_defaults(func=cmd_dump_powers)
+
+    p = sub.add_parser("calibrate-idle", help="measure idle CPU Package power")
+    p.add_argument("--seconds", type=float, default=30)
+    p.set_defaults(func=cmd_calibrate_idle)
 
     return parser
 
