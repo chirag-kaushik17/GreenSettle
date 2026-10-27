@@ -5,6 +5,10 @@ Sections in this file (read top to bottom):
   2. Sampler           - background thread that polls watts every ~1 s
   3. Integration       - watts over time -> joules -> kWh (trapezoidal rule)
   4. Idle calibration  - how many watts the CPU draws doing "nothing"
+  5. CPU-time tracking - how much CPU the job (and its children) used
+  6. Attribution       - which share of the extra energy belongs to the job
+  7. Uncertainty       - how wrong could the job's energy be (kWh, +/-)
+  8. Job runner        - ties 2-7 together around one subprocess
 
 Units: time in seconds, power in watts (W), energy in joules (J) or
 kilowatt-hours (kWh). 1 W for 1 s = 1 J, and 1 kWh = 3,600,000 J.
@@ -14,13 +18,18 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import statistics
+import subprocess
 import threading
+import uuid
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Sequence
+
+import psutil
 
 log = logging.getLogger(__name__)
 
@@ -269,3 +278,295 @@ def calibrate_idle(
     if path is not None:
         result.save(path)
     return result
+
+
+# --------------------------------------------------------------------------
+# 5. CPU-time tracking (psutil)
+# --------------------------------------------------------------------------
+class ProcessTreeCpuTracker:
+    """Adds up user+system CPU seconds of a process AND all its descendants.
+
+    A job such as `python tools/burn.py --threads 4` starts child processes
+    that may finish before the job does. Once a process has exited we can no
+    longer ask the OS about it, so we remember the LAST value we saw for every
+    process and keep it in the total.
+
+    Processes are keyed by (pid, create_time) so that a PID reused by the OS
+    for an unrelated new process is not confused with the old one.
+
+    Limitation: a child that starts AND exits between two polls (default
+    0.25 s apart) is never seen, so very short-lived children are undercounted.
+    """
+
+    def __init__(self, root_pid: int) -> None:
+        self.root_pid = root_pid
+        self._last_seen: dict[tuple[int, float], float] = {}
+
+    def poll(self) -> None:
+        try:
+            root = psutil.Process(self.root_pid)
+            processes = [root, *root.children(recursive=True)]
+        except psutil.Error:  # root already gone: keep the values we have
+            return
+        for proc in processes:
+            try:
+                with proc.oneshot():
+                    key = (proc.pid, proc.create_time())
+                    times = proc.cpu_times()
+            except psutil.Error:  # exited (or not accessible) between listing and reading
+                continue
+            self._last_seen[key] = times.user + times.system
+
+    @property
+    def total_cpu_s(self) -> float:
+        return sum(self._last_seen.values())
+
+    @property
+    def processes_seen(self) -> int:
+        return len(self._last_seen)
+
+
+def system_busy_cpu_seconds() -> float:
+    """CPU-seconds the WHOLE machine has spent busy since boot (all cores summed).
+
+    busy = total - idle. Same definition psutil uses for cpu_percent():
+    iowait counts as idle, and on Linux guest time is already inside user time
+    so it is subtracted to avoid counting it twice. On Windows the fields are
+    user, system, idle, interrupt, dpc.
+    """
+    t = psutil.cpu_times()
+    total = sum(t)
+    total -= getattr(t, "guest", 0.0) + getattr(t, "guest_nice", 0.0)
+    idle = t.idle + getattr(t, "iowait", 0.0)
+    return total - idle
+
+
+# --------------------------------------------------------------------------
+# 6. Attribution: how much of the measured energy belongs to the job?
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class EnergySplit:
+    package_total_j: float  # E_pkg: everything the CPU package used in the window
+    idle_baseline_j: float  # E_idle: what it would have used doing nothing
+    dynamic_j: float  # E_dynamic: the extra energy caused by ALL activity
+    cpu_share: float  # job CPU-seconds / all busy CPU-seconds, clamped to [0, 1]
+    platform_overhead_j: float  # optional platform estimate attributed to the job (0 if off)
+    job_j: float  # E_job: the part we charge to this job
+
+
+def clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
+def split_energy(
+    package_j: float,
+    idle_w: float,
+    duration_s: float,
+    job_cpu_s: float,
+    system_busy_cpu_s: float,
+    platform_overhead_w: float = 0.0,
+) -> EnergySplit:
+    """Split measured package energy into idle, dynamic and the job's part.
+
+        E_idle    = idle_power * duration
+        E_dynamic = max(0, E_pkg - E_idle)     (cannot be negative)
+        cpu_share = clamp(job_cpu_s / system_busy_cpu_s, 0, 1)
+        E_job     = E_dynamic * cpu_share  (+ optional platform overhead * duration * cpu_share)
+
+    Why only the DYNAMIC part? The idle energy would have been spent anyway,
+    job or no job, so it is not caused by the job.
+
+    KNOWN LIMITATION: cpu_share treats every CPU-second as equal. On a hybrid
+    Intel Core Ultra, a second on a P-core costs noticeably more energy than a
+    second on an E-core or low-power E-core, so a job that ran mostly on
+    P-cores is under-charged (and vice versa). The attribution uncertainty
+    term (MeterConfig.attribution_base_fraction) is meant to cover this until
+    a later phase can measure it.
+    """
+    idle_j = idle_w * duration_s
+    dynamic_j = max(0.0, package_j - idle_j)
+    # Job CPU time can slightly exceed system busy time because the two are
+    # read at slightly different moments; and if nothing was busy, share is 0.
+    share = clamp(job_cpu_s / system_busy_cpu_s, 0.0, 1.0) if system_busy_cpu_s > 0 else 0.0
+    platform_j = platform_overhead_w * duration_s * share
+    return EnergySplit(
+        package_total_j=package_j,
+        idle_baseline_j=idle_j,
+        dynamic_j=dynamic_j,
+        cpu_share=share,
+        platform_overhead_j=platform_j,
+        job_j=dynamic_j * share + platform_j,
+    )
+
+
+# --------------------------------------------------------------------------
+# 7. Uncertainty (kept separate so it can be explained and tested on its own)
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class UncertaintyBreakdown:
+    """Absolute uncertainties in kWh (each is a +/- amount)."""
+
+    sensor_kwh: float
+    sampling_kwh: float
+    idle_baseline_kwh: float
+    attribution_kwh: float
+    platform_kwh: float
+    combined_kwh: float
+
+
+def combine_in_quadrature(*terms: float) -> float:
+    """sqrt(a^2 + b^2 + ...): the standard way to add INDEPENDENT errors.
+
+    Independent errors partly cancel out, so the total is smaller than the
+    plain sum but at least as large as the biggest single term.
+    """
+    return math.sqrt(sum(t * t for t in terms))
+
+
+def estimate_uncertainty(
+    package_kwh: float,
+    package_left_riemann_kwh: float,
+    idle_std_w: float,
+    duration_s: float,
+    dynamic_kwh: float,
+    cpu_share: float,
+    config: MeterConfig = MeterConfig(),
+) -> UncertaintyBreakdown:
+    """Four (optionally five) independent error sources, combined in quadrature.
+
+      sensor      = sensor_tolerance_fraction * E_pkg
+      sampling    = |E_trapezoid - E_left_riemann|
+      idle        = idle_std * duration
+      attribution = (base + k * (1 - cpu_share)) * E_dynamic
+      platform    = platform_overhead_unc_w * duration * cpu_share   (0 unless enabled)
+
+    Note: the first three terms describe the error in the package/dynamic
+    energy and are NOT scaled down by cpu_share. That makes the result a
+    deliberately conservative (wide) band for jobs with a small share.
+    The coefficients come from MeterConfig and are PLACEHOLDERS.
+    """
+    sensor = config.sensor_tolerance_fraction * package_kwh
+    sampling = abs(package_kwh - package_left_riemann_kwh)
+    idle = joules_to_kwh(idle_std_w * duration_s)
+    attribution = (config.attribution_base_fraction + config.attribution_k * (1 - cpu_share)) * dynamic_kwh
+    platform = (
+        joules_to_kwh(config.platform_overhead_unc_w * duration_s * cpu_share)
+        if config.platform_overhead_w > 0
+        else 0.0
+    )
+    return UncertaintyBreakdown(
+        sensor_kwh=sensor,
+        sampling_kwh=sampling,
+        idle_baseline_kwh=idle,
+        attribution_kwh=attribution,
+        platform_kwh=platform,
+        combined_kwh=combine_in_quadrature(sensor, sampling, idle, attribution, platform),
+    )
+
+
+# --------------------------------------------------------------------------
+# 8. Job runner
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class JobMeasurement:
+    job_id: str
+    command: list[str]
+    exit_code: int
+    started_at: str  # wall clock, ISO-8601 UTC (for humans and later phases)
+    ended_at: str
+    duration_s: float  # from monotonic sample timestamps (first to last sample)
+    sampler: SamplerStats
+    split: EnergySplit
+    job_cpu_s: float
+    system_busy_cpu_s: float
+    uncertainty: UncertaintyBreakdown
+    midpoint_utc: datetime  # used to look up carbon intensity
+
+
+def new_job_id() -> str:
+    return datetime.now(timezone.utc).strftime("job-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:6]
+
+
+def run_job(
+    command: Sequence[str],
+    read_watts: Callable[[], float],
+    idle: IdleCalibration,
+    config: MeterConfig = MeterConfig(),
+    cpu_poll_s: float = 0.25,
+) -> JobMeasurement:
+    """Run `command` as a subprocess and measure it.
+
+    Order of events:
+      1. start the sampler (first power sample) and snapshot system CPU time
+      2. launch the command; poll its process tree for CPU time every 0.25 s
+      3. when it exits: snapshot system CPU time, stop the sampler (last sample)
+      4. integrate, split, estimate uncertainty
+    """
+    if not command:
+        raise ValueError("No command given to run.")
+    job_id = new_job_id()
+    sampler = Sampler(read_watts, config.poll_interval_s)
+    started_wall = datetime.now(timezone.utc)
+    sampler.start()
+    busy_before = system_busy_cpu_seconds()
+    try:
+        proc = subprocess.Popen(list(command))
+    except OSError:
+        sampler.stop(final_sample=False)
+        raise
+    tracker = ProcessTreeCpuTracker(proc.pid)
+    try:
+        while True:
+            tracker.poll()  # poll BEFORE checking exit, to catch the final CPU time
+            if proc.poll() is not None:
+                break
+            time.sleep(cpu_poll_s)
+    except KeyboardInterrupt:
+        log.warning("interrupted: stopping the job")
+        proc.terminate()
+        proc.wait()
+        raise
+    finally:
+        busy_after = system_busy_cpu_seconds()
+        sampler.stop()
+    ended_wall = datetime.now(timezone.utc)
+
+    samples = sampler.samples
+    if len(samples) < 2:
+        raise RuntimeError("Fewer than 2 power samples: cannot integrate energy.")
+    duration_s = samples[-1].t - samples[0].t
+    package_j = integrate_trapezoid(samples)
+    package_left_j = integrate_left_riemann(samples)
+    system_busy = busy_after - busy_before
+    split = split_energy(
+        package_j, idle.mean_w, duration_s, tracker.total_cpu_s, system_busy, config.platform_overhead_w
+    )
+    unc = estimate_uncertainty(
+        package_kwh=joules_to_kwh(package_j),
+        package_left_riemann_kwh=joules_to_kwh(package_left_j),
+        idle_std_w=idle.std_w,
+        duration_s=duration_s,
+        dynamic_kwh=joules_to_kwh(split.dynamic_j),
+        cpu_share=split.cpu_share,
+        config=config,
+    )
+    stats = sampler.stats()
+    if stats.unchanged_fraction > 0.5:
+        log.info("%.0f%% of polls repeated the previous value (LHM refresh slower than our poll?)",
+                 100 * stats.unchanged_fraction)
+    if proc.returncode != 0:
+        log.warning("job exited with code %d", proc.returncode)
+    return JobMeasurement(
+        job_id=job_id,
+        command=list(command),
+        exit_code=proc.returncode,
+        started_at=started_wall.isoformat(timespec="seconds"),
+        ended_at=ended_wall.isoformat(timespec="seconds"),
+        duration_s=duration_s,
+        sampler=stats,
+        split=split,
+        job_cpu_s=tracker.total_cpu_s,
+        system_busy_cpu_s=system_busy,
+        uncertainty=unc,
+        midpoint_utc=started_wall + (ended_wall - started_wall) / 2,
+    )

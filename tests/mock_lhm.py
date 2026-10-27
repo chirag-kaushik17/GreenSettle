@@ -4,6 +4,9 @@ It serves a JSON tree at /data.json. Tests can change the CPU Package watts
 while the server runs, to simulate load.
 
 Can also be run by hand:  python tests/mock_lhm.py --port 8085 --watts 4.5
+With --follow-load the fake CPU Package power follows this machine's real CPU
+load (idle 4.5 W up to 39.7 W at 100 %), which makes `run` demos realistic
+without the real sensor.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "lhm_data_sample.json"
 
@@ -39,8 +42,14 @@ def set_package_watts(tree: dict[str, Any], watts: float | None) -> None:
 class MockLhmServer:
     """Start with .start(), read .url, change .package_watts, stop with .stop()."""
 
-    def __init__(self, tree: dict[str, Any] | None = None, port: int = 0) -> None:
+    def __init__(
+        self,
+        tree: dict[str, Any] | None = None,
+        port: int = 0,
+        watts_fn: Callable[[], float] | None = None,
+    ) -> None:
         self.tree = copy.deepcopy(tree) if tree is not None else load_fixture()
+        self.watts_fn = watts_fn  # if set, called on every request to get the package watts
         self.requests = 0
         self._lock = threading.Lock()
         server = self
@@ -52,6 +61,8 @@ class MockLhmServer:
                     return
                 with server._lock:
                     server.requests += 1
+                    if server.watts_fn is not None:
+                        set_package_watts(server.tree, round(server.watts_fn(), 1))
                     body = json.dumps(server.tree).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -87,8 +98,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8085)
     parser.add_argument("--watts", type=float, default=4.5)
+    parser.add_argument("--follow-load", action="store_true", help="watts follow real CPU load")
     a = parser.parse_args()
-    srv = MockLhmServer(port=a.port)
+    watts_fn = None
+    if a.follow_load:
+        import psutil
+
+        psutil.cpu_percent()  # first call only primes the counter
+        watts_fn = lambda: a.watts + (39.7 - a.watts) * psutil.cpu_percent() / 100  # noqa: E731
+    srv = MockLhmServer(port=a.port, watts_fn=watts_fn)
     srv.set_package_watts(a.watts)
     print(f"Mock LHM serving {srv.url} (Ctrl+C to stop)")
     srv.start()
