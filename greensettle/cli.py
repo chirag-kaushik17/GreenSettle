@@ -4,6 +4,10 @@ Run from the project root, e.g. in PowerShell:
 
     python -m greensettle.cli check-sensor
     python -m greensettle.cli dump-powers --save fixtures\\lhm_data_sample.json
+    python -m greensettle.cli calibrate-idle --seconds 30
+    python -m greensettle.cli run -- python tools/burn.py --seconds 30 --threads 4
+    python -m greensettle.cli intensity-force dirty
+    python -m greensettle.cli watch
 """
 
 from __future__ import annotations
@@ -13,11 +17,15 @@ import json
 import logging
 import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from greensettle.agent import lhm_client
 from greensettle.agent import meter
 from greensettle.agent.lhm_client import LhmClient, LhmError
+from greensettle.engine.convert import to_gco2e
+from greensettle.intensity import provider as intensity
 
 log = logging.getLogger("greensettle")
 
@@ -96,7 +104,7 @@ def cmd_calibrate_idle(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 # run
 # --------------------------------------------------------------------------
-def measurement_record(m: meter.JobMeasurement) -> dict:
+def measurement_record(m: meter.JobMeasurement, reading: intensity.IntensityReading) -> dict:
     """Build the stable JSON record for one job (consumed by later phases)."""
     kwh = meter.joules_to_kwh
     u = m.uncertainty
@@ -127,9 +135,15 @@ def measurement_record(m: meter.JobMeasurement) -> dict:
             "attribution": u.attribution_kwh,
             "combined": u.combined_kwh,
         },
-        "intensity": None,  # filled in milestone 4
-        "gco2e": None,
+        "intensity": {
+            "g_per_kwh": round(reading.g_per_kwh, 2),
+            "unc_g_per_kwh": round(reading.unc_g_per_kwh, 2),
+            "source": reading.source,
+        },
+        "gco2e": None,  # filled below
     }
+    emissions = to_gco2e(kwh(m.split.job_j), u.combined_kwh, reading.g_per_kwh, reading.unc_g_per_kwh)
+    record["gco2e"] = {"value": emissions.value_g, "unc": emissions.unc_g}
     # Optional platform overhead: only adds keys when switched on, so the
     # default schema stays exactly as specified.
     if m.split.platform_overhead_j > 0:
@@ -157,7 +171,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     print(f"Running: {subprocess.list2cmdline(command)}")
     m = meter.run_job(command, client.package_watts, idle, config)
-    record = measurement_record(m)
+    # Intensity at the middle of the job (Phase 1 uses one value per job).
+    reading = intensity.make_provider(args.intensity, data_dir).get(m.midpoint_utc)
+    record = measurement_record(m, reading)
 
     out_dir = data_dir / "measurements"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -167,6 +183,56 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"Saved to {out_path}")
     if m.exit_code != 0:
         print(f"WARNING: the job exited with code {m.exit_code}", file=sys.stderr)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# watch
+# --------------------------------------------------------------------------
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Live view: package watts and the gCO2e per second they would cause.
+
+    Energy in one second = W * 1 s = W joules = W / 3,600,000 kWh.
+    The error band uses only the sensor tolerance (there is no integration or
+    attribution in a single instantaneous reading) plus the intensity error.
+    The demo override file is re-read every second, so `intensity-force` in a
+    second terminal takes effect immediately.
+    """
+    client = LhmClient(args.url)
+    config = meter.MeterConfig()
+    data_dir = Path(args.data_dir)
+    print("Ctrl+C to stop.   (whole CPU package, not per job)")
+    print(f"{'time':8}  {'package W':>9}  {'g/kWh':>7}  {'gCO2e/s':>20}  source")
+    shown = 0
+    try:
+        while args.count is None or shown < args.count:
+            tick = time.monotonic()
+            now = datetime.now(timezone.utc)
+            try:
+                watts = client.package_watts()
+            except LhmError as exc:
+                print(f"{now.astimezone():%H:%M:%S}  sensor error: {exc}")
+            else:
+                reading = intensity.make_provider(args.intensity, data_dir).get(now)
+                kwh_per_s = meter.joules_to_kwh(watts)
+                e = to_gco2e(kwh_per_s, config.sensor_tolerance_fraction * kwh_per_s,
+                             reading.g_per_kwh, reading.unc_g_per_kwh)
+                band = f"{e.value_g:.6f} ± {e.unc_g:.6f}"
+                print(f"{now.astimezone():%H:%M:%S}  {watts:9.2f}  {reading.g_per_kwh:7.1f}  {band:>20}  {reading.source}")
+            shown += 1
+            time.sleep(max(0.0, 1.0 - (time.monotonic() - tick)))
+    except KeyboardInterrupt:
+        print("stopped")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# intensity-force
+# --------------------------------------------------------------------------
+def cmd_intensity_force(args: argparse.Namespace) -> int:
+    state = None if args.state == "off" else args.state
+    path = intensity.save_forced_state(Path(args.data_dir), state)
+    print(f"Simulated intensity override: {args.state}  (saved in {path})")
     return 0
 
 
@@ -182,6 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--data-dir", default="data", help="where idle.json and measurements go")
     parser.add_argument("--interval", type=float, default=1.0, help="sensor poll interval in seconds")
+    parser.add_argument("--intensity", default="simulated", choices=["simulated"],
+                        help="carbon intensity provider (default: simulated)")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -204,6 +272,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="uncertainty of --platform-overhead-w, in watts")
     p.add_argument("job_command", nargs=argparse.REMAINDER, help="the command to run, after --")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("watch", help="live package watts and gCO2e/s until Ctrl+C")
+    p.add_argument("--count", type=int, default=None, help="stop after N lines (default: run forever)")
+    p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("intensity-force", help="demo override for the simulated intensity curve")
+    p.add_argument("state", choices=["green", "dirty", "off"])
+    p.set_defaults(func=cmd_intensity_force)
 
     return parser
 
