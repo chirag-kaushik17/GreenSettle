@@ -1,0 +1,215 @@
+{
+  "id": 0,
+  "Text": "Sensor",
+  "Min": "Min",
+  "Value": "Value",
+  "Max": "Max",
+  "ImageURL": "",
+  "Children": [
+    {
+      "id": 1,
+      "Text": "SYNTHETIC-SAMPLE-replace-with-real-data-json",
+      "Min": "",
+      "Value": "",
+      "Max": "",
+      "ImageURL": "images_icon/computer.png",
+      "Children": [
+        {
+          "id": 2,
+          "Text": "Intel Core Ultra (synthetic)",
+          "Min": "",
+          "Value": "",
+          "Max": "",
+          "ImageURL": "images_icon/cpu.png",
+          "HardwareId": "/intelcpu/0",
+          "Children": [
+            {
+              "id": 3,
+              "Text": "Clocks",
+              "Min": "",
+              "Value": "",
+              "Max": "",
+              "ImageURL": "images_icon/clock.png",
+              "Children": [
+                {
+                  "id": 4,
+                  "Text": "CPU Core #1",
+                  "Min": "400.0 MHz",
+                  "Value": "1397.2 MHz",
+                  "Max": "4789.4 MHz",
+                  "SensorId": "/intelcpu/0/clock/1",
+                  "Type": "Clock",
+                  "ImageURL": "images/transparent.png",
+                  "RawMin": 400.0,
+                  "RawValue": 1397.2,
+                  "RawMax": 4789.4,
+                  "Children": []
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "Text": "Temperatures",
+              "Min": "",
+              "Value": "",
+              "Max": "",
+              "ImageURL": "images_icon/temperature.png",
+              "Children": [
+                {
+                  "id": 6,
+                  "Text": "CPU Package",
+                  "Min": "38.0 °C",
+                  "Value": "45.0 °C",
+                  "Max": "103.0 °C",
+                  "SensorId": "/intelcpu/0/temperature/0",
+                  "Type": "Temperature",
+                  "ImageURL": "images/transparent.png",
+                  "RawMin": 38.0,
+                  "RawValue": 45.0,
+                  "RawMax": 103.0,
+                  "Children": []
+                }
+              ]
+            },
+            {
+              "id": 7,
+              "Text": "Powers",
+              "Min": "",
+              "Value": "",
+              "Max": "",
+              "ImageURL": "images_icon/power.png",
+              "Children": [
+                {
+                  "id": 8,
+                  "Text": "CPU Package",
+                  "Min": "3.1 W",
+                  "Value": "4.5 W",
+                  "Max": "39.7 W",
+                  "SensorId": "/intelcpu/0/power/0",
+                  "Type": "Power",
+                  "ImageURL": "images/transparent.png",
+                  "RawMin": 3.1,
+                  "RawValue": 4.5,
+                  "RawMax": 39.7,
+                  "Children": []
+                },
+                {
+                  "id": 9,
+                  "Text": "CPU Cores",
+                  "Min": "0.6 W",
+                  "Value": "1.2 W",
+                  "Max": "33.0 W",
+                  "SensorId": "/intelcpu/0/power/1",
+                  "Type": "Power",
+                  "ImageURL": "images/transparent.png",
+                  "RawMin": 0.6,
+                  "RawValue": 1.2,
+                  "RawMax": 33.0,
+                  "Children": []
+                },
+                {
+                  "id": 10,
+                  "Text": "CPU Memory",
+                  "Min": "0.0 W",
+                  "Value": "0.0 W",
+                  "Max": "0.0 W",
+                  "SensorId": "/intelcpu/0/power/3",
+                  "Type": "Power",
+                  "ImageURL": "images/transparent.png",
+                  "RawMin": 0.0,
+                  "RawValue": 0.0,
+                  "RawMax": 0.0,
+                  "Children": []
+                },
+                {
+                  "id": 11,
+                  "Text": "CPU Platform",
+                  "Min": "0.0 W",
+                  "Value": "0.0 W",
+                  "Max": "0.0 W",
+                  "SensorId": "/intelcpu/0/power/4",
+                  "Type": "Power",
+                  "ImageURL": "images/transparent.png",
+                  "RawMin": 0.0,
+                  "RawValue": 0.0,
+                  "RawMax": 0.0,
+                  "Children": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "Text": "Intel Arc Graphics (synthetic)",
+          "Min": "",
+          "Value": "",
+          "Max": "",
+          "ImageURL": "images_icon/intel.png",
+          "HardwareId": "/gpu-intel-integrated/0",
+          "Children": [
+            {
+              "id": 13,
+              "Text": "Powers",
+              "Min": "",
+              "Value": "",
+              "Max": "",
+              "ImageURL": "images_icon/power.png",
+              "Children": [
+                {
+                  "id": 14,
+                  "Text": "GPU Power",
+                  "Min": "0.0 W",
+                  "Value": "0.3 W",
+                  "Max": "12.0 W",
+                  "SensorId": "/gpu-intel-integrated/0/power/0",
+                  "Type": "Power",
+                  "ImageURL": "images/transparent.png",
+                  "RawMin": 0.0,
+                  "RawValue": 0.3,
+                  "RawMax": 12.0,
+                  "Children": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "Text": "Generic Memory",
+          "Min": "",
+          "Value": "",
+          "Max": "",
+          "ImageURL": "images_icon/ram.png",
+          "HardwareId": "/ram",
+          "Children": [
+            {
+              "id": 16,
+              "Text": "Load",
+              "Min": "",
+              "Value": "",
+              "Max": "",
+              "ImageURL": "images_icon/load.png",
+              "Children": [
+                {
+                  "id": 17,
+                  "Text": "Memory",
+                  "Min": "40.1 %",
+                  "Value": "42.3 %",
+                  "Max": "61.0 %",
+                  "SensorId": "/ram/load/0",
+                  "Type": "Load",
+                  "ImageURL": "images/transparent.png",
+                  "RawMin": 40.1,
+                  "RawValue": 42.3,
+                  "RawMax": 61.0,
+                  "Children": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

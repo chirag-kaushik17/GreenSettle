@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# Runtime output (idle calibration, measurements, demo state) stays local.
+data/
