@@ -39,6 +39,14 @@ def set_package_watts(tree: dict[str, Any], watts: float | None) -> None:
     raise KeyError("CPU Package sensor not found in tree")
 
 
+def follow_load_watts(idle_w: float = 4.5, max_w: float = 39.7) -> Callable[[], float]:
+    """A watts function that follows this machine's real CPU load (psutil)."""
+    import psutil
+
+    psutil.cpu_percent()  # the first call only primes the counter
+    return lambda: idle_w + (max_w - idle_w) * psutil.cpu_percent() / 100
+
+
 class MockLhmServer:
     """Start with .start(), read .url, change .package_watts, stop with .stop()."""
 
@@ -100,12 +108,7 @@ if __name__ == "__main__":
     parser.add_argument("--watts", type=float, default=4.5)
     parser.add_argument("--follow-load", action="store_true", help="watts follow real CPU load")
     a = parser.parse_args()
-    watts_fn = None
-    if a.follow_load:
-        import psutil
-
-        psutil.cpu_percent()  # first call only primes the counter
-        watts_fn = lambda: a.watts + (39.7 - a.watts) * psutil.cpu_percent() / 100  # noqa: E731
+    watts_fn = follow_load_watts(a.watts) if a.follow_load else None
     srv = MockLhmServer(port=a.port, watts_fn=watts_fn)
     srv.set_package_watts(a.watts)
     print(f"Mock LHM serving {srv.url} (Ctrl+C to stop)")
