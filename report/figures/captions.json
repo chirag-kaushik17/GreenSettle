@@ -1,0 +1,6 @@
+{
+  "architecture": "Architecture: the worker on the laptop pulls jobs; the server plans with choose_slot and settles measured energy into an append-only ledger.",
+  "deadzone": "Dead zone: a rebate is paid only if the whole band lies above zero, and a backfire is declared only if it lies below zero (worked examples A, C, D, computed by compute_settlement).",
+  "e3": "E3 (simulated grid and forecast): emissions per job relative to running immediately, choose_slot with defer_z = 1, 504 jobs over 7 days.",
+  "e4": "E4 (simulated 10 % measurement noise, 2000 jobs per point): a wider dead zone removes false rewards faster than deserved ones."
+}
