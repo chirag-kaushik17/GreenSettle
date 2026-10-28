@@ -26,6 +26,8 @@ from greensettle.agent import meter
 from greensettle.agent.lhm_client import LhmClient, LhmError
 from greensettle.engine.convert import to_gco2e
 from greensettle.intensity import provider as intensity
+from greensettle.ledger import commands as ledger_commands
+from greensettle.ledger import db as ledger_db
 
 log = logging.getLogger("greensettle")
 
@@ -240,7 +242,7 @@ def cmd_intensity_force(args: argparse.Namespace) -> int:
 # Argument parsing
 # --------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="greensettle", description="GreenSettle Phase 1: measure.")
+    parser = argparse.ArgumentParser(prog="greensettle", description="GreenSettle: measure (Phase 1) and settle (Phase 2).")
     parser.add_argument(
         "--url",
         default=None,
@@ -250,8 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval", type=float, default=1.0, help="sensor poll interval in seconds")
     parser.add_argument("--intensity", default="simulated", choices=["simulated"],
                         help="carbon intensity provider (default: simulated)")
+    parser.add_argument("--db", default=str(ledger_db.DEFAULT_DB_PATH), help="ledger database (Phase 2)")
+    parser.add_argument("--now", default=None, help="Phase 2: use this ISO time instead of the real clock")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     sub = parser.add_subparsers(dest="command", required=True)
+    ledger_commands.register(sub)
 
     p = sub.add_parser("check-sensor", help="check the server and list the CPU power sensors")
     p.set_defaults(func=cmd_check_sensor)
@@ -294,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     args.url = lhm_client.resolve_url(args.url)
     try:
         return args.func(args)
-    except (LhmError, FileNotFoundError) as exc:
+    except (LhmError, FileNotFoundError, ValueError, KeyError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
