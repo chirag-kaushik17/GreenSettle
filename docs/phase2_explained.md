@@ -190,6 +190,53 @@ forced green/dirty state would give both times the same value.
 
 ---
 
-## 5. Gaming analysis
+## 5. Gaming analysis (`experiments/gaming_table.py`)
 
-*Pending: this section's specification has not been received yet.*
+```
+python experiments/gaming_table.py      # prints a markdown table, saves experiments/results/gaming_table.csv
+```
+
+The experiment asks whether users can farm credits. It runs four archetypes,
+200 jobs each:
+
+- **honest deferrer:** defers to the truly greenest slot within 6 h;
+- **always-immediate:** the control, never defers;
+- **junk farmer:** 1-second jobs;
+- **noise chaser:** a flat curve, so the true gain is exactly zero.
+
+Each archetype is run through four rules, with the same job streams and the
+same noise draws:
+
+- an **ex-ante strawman**: rebate = rho × p × declared_E × (forecast i_submit −
+  forecast i_run), decided at submit time, with no measurement, no dead zone
+  and no cap. It is deliberately simplified;
+- the real `compute_settlement` at **k = 0, 1 and 2**.
+
+Fixed seeds; the default parameters were not tuned.
+
+**Assumptions** (printed with the results):
+
+- measured values are the true values × (1 + N(0, 10 %)), with honest error bars;
+- the ex-ante fee is declared energy × forecast run-time intensity;
+- credits are floats, with no ledger rounding.
+
+**Results** (seed 7; full table in `experiments/results/gaming_table.md`):
+
+| archetype | rule | mean net / job | share rebated | jobs with net < 0 |
+|---|---|---:|---:|---:|
+| honest_deferrer | ex-ante | 172.91 | 55.5 % | **2** (lowest −18.06) |
+| honest_deferrer | ex-post k=1 | 181.94 | 46.5 % | 0 |
+| always_immediate | every rule | ≈ 217 | 0 % | 0 |
+| junk_farmer | ex-ante | 0.96 | 55.5 % | 0 |
+| junk_farmer | ex-post k=1 | 0.97 | 42.5 % | 0 |
+| noise_chaser | ex-post k=0 | 205.64 | 49.5 % | 0 |
+| noise_chaser | ex-post k=1 | 210.43 | 17.5 % | 0 |
+| noise_chaser | ex-post k=2 | 211.53 | 1.5 % | 0 |
+
+**Reading (from the numbers only).**
+
+- Under the simplified ex-ante strawman, 2 honest-deferrer jobs had a negative
+  net (lowest −18.06 credits): the rule paid them to run.
+- Across all ex-post runs, the lowest net of any job was +0.20 credits.
+- On the flat curve, where there is no real saving, the noise chaser was paid
+  a rebate on 49.5 % of jobs at k = 0, 17.5 % at k = 1 and 1.5 % at k = 2.
