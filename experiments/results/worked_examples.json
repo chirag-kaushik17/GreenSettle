@@ -1,0 +1,55 @@
+{
+  "energy_kwh": 0.000175,
+  "energy_unc_kwh": 1.69e-05,
+  "params": {
+    "p": 1000.0,
+    "rho": 0.5,
+    "gamma": 0.6,
+    "k": 1.0,
+    "sigma": 0.0
+  },
+  "cases": [
+    {
+      "name": "A (big saving)",
+      "i_submit": 700,
+      "i_submit_unc": 70,
+      "i_run": 80,
+      "i_run_unc": 8,
+      "zone": "saving",
+      "fee": 14.0,
+      "rebate": 8.4,
+      "surcharge": 0.0,
+      "net": 5.6,
+      "saved_g": 0.1085,
+      "saved_unc_g": 0.0161805742790545
+    },
+    {
+      "name": "C (inside the noise)",
+      "i_submit": 82,
+      "i_submit_unc": 8.2,
+      "i_run": 80,
+      "i_run_unc": 8,
+      "zone": "dead_zone",
+      "fee": 14.0,
+      "rebate": 0.0,
+      "surcharge": 0.0,
+      "net": 14.0,
+      "saved_g": 0.00035,
+      "saved_unc_g": 0.0020050853946902113
+    },
+    {
+      "name": "D (backfire)",
+      "i_submit": 80,
+      "i_submit_unc": 8,
+      "i_run": 700,
+      "i_run_unc": 70,
+      "zone": "backfire",
+      "fee": 122.49999999999999,
+      "rebate": 0.0,
+      "surcharge": 0.0,
+      "net": 122.49999999999999,
+      "saved_g": -0.1085,
+      "saved_unc_g": 0.0161805742790545
+    }
+  ]
+}
