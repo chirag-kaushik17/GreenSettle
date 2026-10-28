@@ -65,6 +65,7 @@ class Worker:
     idle: meter.IdleCalibration
     slots: int = 1
     meter_config: meter.MeterConfig = field(default_factory=meter.MeterConfig)
+    backoff_max_s: float = BACKOFF_MAX_S  # longest wait between claims when idle (demos use less)
     sleep: Callable[[float], None] = time.sleep
     _stop: threading.Event = field(default_factory=threading.Event)
 
@@ -149,7 +150,7 @@ class Worker:
                 delay = BACKOFF_START_S
             else:  # idle or unreachable: back off politely
                 self._stop.wait(delay)
-                delay = min(BACKOFF_MAX_S, delay * 2)
+                delay = min(self.backoff_max_s, delay * 2)
 
     def telemetry_loop(self) -> None:
         buffer: list[dict] = []
