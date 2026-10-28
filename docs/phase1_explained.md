@@ -168,24 +168,30 @@ default because we have no measured value for X.
 
 ## 5. Uncertainty: how wrong could E_job be?
 
-There are four independent error sources, each expressed as ± kWh:
+There are four independent error sources, each expressed as ± kWh.
+
+The first three are errors in the **package** energy (E_pkg) or the **idle**
+energy (E_idle). Since E_job = cpu_share × (E_pkg − E_idle), an error of X
+joules in either of them moves E_job by only cpu_share × X, so these three
+terms are multiplied by cpu_share. The attribution term is already about the
+split itself, so it is not scaled again. (cpu_share = 112/120 = 0.9333.)
 
 | term | formula | worked example |
 |---|---|---|
-| sensor | `sensor_tolerance_fraction × E_pkg` = 0.05 × 810 | **40.5 J** |
-| sampling | `|E_trapezoid − E_left_riemann|` = |810 − 799.5| | **10.5 J** |
-| idle baseline | `idle_std × duration` = 0.4 × 30 | **12.0 J** |
-| attribution | `(base + k × (1 − cpu_share)) × E_dynamic` = (0.05 + 0.20 × 0.067) × 675 | **42.75 J** |
+| sensor | `cpu_share × sensor_tolerance_fraction × E_pkg` = 0.9333 × 0.05 × 810 | **37.8 J** |
+| sampling | `cpu_share × |E_trapezoid − E_left_riemann|` = 0.9333 × |810 − 799.5| | **9.8 J** |
+| idle baseline | `cpu_share × idle_std × duration` = 0.9333 × 0.4 × 30 | **11.2 J** |
+| attribution | `(base + k × (1 − cpu_share)) × E_dynamic` = (0.05 + 0.20 × 0.0667) × 675 | **42.75 J** |
 
 They are combined **in quadrature** (square, add, square root), the standard
 way to add independent errors. They partly cancel out, so the total is
 smaller than the plain sum but never smaller than the biggest term:
 
 ```
-combined = √(40.5² + 10.5² + 12.0² + 42.75²) = √3722.06 ≈ 61.0 J ≈ 0.0000169 kWh
+combined = √(37.8² + 9.8² + 11.2² + 42.75²) = √3477.88 ≈ 59.0 J ≈ 0.0000164 kWh
 ```
 
-So the job used **630 ± 61 J**, about ±10 %.
+So the job used **630 ± 59 J**, about ±9.4 %.
 
 Two honest notes:
 
@@ -196,10 +202,11 @@ Two honest notes:
   not measured facts, and a later phase must replace them with calibration
   experiments (for example a wall-socket power meter, or repeated runs of the
   same job).
-- **The band is deliberately conservative.** The sensor, sampling and idle
-  terms describe errors in the whole package or dynamic energy and are not
-  scaled down by `cpu_share`. For a job with a small share, this overstates
-  its error. We chose to report "too wide" rather than "too narrow".
+- **Why scaling by cpu_share matters.** An earlier version did not scale
+  the sensor, sampling and idle terms. A job owning 5 % of the CPU then got
+  an error band several times larger than its own energy, so every job on a
+  shared machine would have been "inside the noise". Scaling follows directly
+  from the formula for E_job.
 
 ---
 
@@ -231,8 +238,8 @@ Worked example (job above, intensity 450 ± 45 g/kWh at the job's midpoint):
 
 ```
 gCO2e         = 0.000175 kWh × 450 g/kWh = 0.0788 g
-relative err  = √( (61.0/630)² + (45/450)² ) = √(0.0968² + 0.100²) = 0.139  (13.9 %)
-absolute err  = 0.0788 × 0.139 = 0.011 g
+relative err  = √( (59.0/630)² + (45/450)² ) = √(0.0936² + 0.100²) = 0.137  (13.7 %)
+absolute err  = 0.0788 × 0.137 = 0.011 g
 result        = 0.079 ± 0.011 gCO2e
 ```
 
@@ -259,7 +266,12 @@ turn into scheduling and credits.
 2. **CPU time is an imperfect proxy** for energy on hybrid P/E-core CPUs (see
    section 4).
 3. **Very short-lived child processes** (started and finished between two
-   0.25 s CPU polls) are missed.
+   0.25 s CPU polls) are missed by the psutil tracker, and so is the last
+   ≤ 0.25 s of every process. On Linux/macOS, `run_job` corrects this with
+   the OS's final totals from `os.wait4()`. That covers the root process and
+   every descendant it waited for. Windows has no `wait4`, so there the
+   undercount is at most about 0.25 s per process (under 1 % for a 30 s,
+   4-worker job).
 4. **The sensor itself is a model.** RAPL is Intel's on-chip estimate, good
    but not a lab instrument. Hence the sensor tolerance term.
 5. **One intensity value per job** (at its midpoint). Fine for short jobs; a

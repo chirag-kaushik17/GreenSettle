@@ -437,20 +437,23 @@ def estimate_uncertainty(
 ) -> UncertaintyBreakdown:
     """Four (optionally five) independent error sources, combined in quadrature.
 
-      sensor      = sensor_tolerance_fraction * E_pkg
-      sampling    = |E_trapezoid - E_left_riemann|
-      idle        = idle_std * duration
+      sensor      = cpu_share * sensor_tolerance_fraction * E_pkg
+      sampling    = cpu_share * |E_trapezoid - E_left_riemann|
+      idle        = cpu_share * idle_std * duration
       attribution = (base + k * (1 - cpu_share)) * E_dynamic
       platform    = platform_overhead_unc_w * duration * cpu_share   (0 unless enabled)
 
-    Note: the first three terms describe the error in the package/dynamic
-    energy and are NOT scaled down by cpu_share. That makes the result a
-    deliberately conservative (wide) band for jobs with a small share.
+    Why the first three terms are multiplied by cpu_share: they are errors in
+    E_pkg and E_idle, and E_job = cpu_share * (E_pkg - E_idle). An error of
+    X joules in E_pkg therefore moves E_job by only cpu_share * X. (Without
+    this, a job owning 5 % of the CPU would get an error band several times
+    larger than its own energy.) The attribution term is already about the
+    split itself, so it is not scaled again.
     The coefficients come from MeterConfig and are PLACEHOLDERS.
     """
-    sensor = config.sensor_tolerance_fraction * package_kwh
-    sampling = abs(package_kwh - package_left_riemann_kwh)
-    idle = joules_to_kwh(idle_std_w * duration_s)
+    sensor = cpu_share * config.sensor_tolerance_fraction * package_kwh
+    sampling = cpu_share * abs(package_kwh - package_left_riemann_kwh)
+    idle = cpu_share * joules_to_kwh(idle_std_w * duration_s)
     attribution = (config.attribution_base_fraction + config.attribution_k * (1 - cpu_share)) * dynamic_kwh
     platform = (
         joules_to_kwh(config.platform_overhead_unc_w * duration_s * cpu_share)

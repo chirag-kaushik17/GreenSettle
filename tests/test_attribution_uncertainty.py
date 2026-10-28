@@ -67,9 +67,10 @@ def unc(**overrides):
 def test_uncertainty_terms_match_formulas():
     cfg = meter.MeterConfig()
     u = unc()
-    assert u.sensor_kwh == pytest.approx(cfg.sensor_tolerance_fraction * 1e-4)
-    assert u.sampling_kwh == pytest.approx(0.02e-4)
-    assert u.idle_baseline_kwh == pytest.approx(0.3 * 30 / 3.6e6)
+    # sensor, sampling and idle terms reach E_job scaled by cpu_share (0.8 here)
+    assert u.sensor_kwh == pytest.approx(0.8 * cfg.sensor_tolerance_fraction * 1e-4)
+    assert u.sampling_kwh == pytest.approx(0.8 * 0.02e-4)
+    assert u.idle_baseline_kwh == pytest.approx(0.8 * 0.3 * 30 / 3.6e6)
     assert u.attribution_kwh == pytest.approx((cfg.attribution_base_fraction + cfg.attribution_k * 0.2) * 6e-5)
     assert u.platform_kwh == 0.0
     assert u.combined_kwh == pytest.approx(
@@ -93,6 +94,18 @@ def test_each_term_grows_in_the_right_direction(change, term):
     before, after = unc(), unc(**change)
     assert getattr(after, term) > getattr(before, term)
     assert after.combined_kwh > before.combined_kwh
+
+
+def test_package_and_idle_terms_scale_with_cpu_share():
+    full, tenth = unc(cpu_share=1.0), unc(cpu_share=0.1)
+    for term in ("sensor_kwh", "sampling_kwh", "idle_baseline_kwh"):
+        assert getattr(tenth, term) == pytest.approx(0.1 * getattr(full, term))
+
+
+def test_small_share_job_gets_a_proportionate_band():
+    # A job owning 5 % of the CPU: E_job = 0.05 * 6e-5 kWh = 3e-6 kWh.
+    u = unc(cpu_share=0.05)
+    assert u.sensor_kwh + u.sampling_kwh + u.idle_baseline_kwh < 3e-6
 
 
 def test_attribution_error_smallest_when_job_owns_the_whole_cpu():
