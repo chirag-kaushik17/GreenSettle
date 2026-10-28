@@ -1,36 +1,47 @@
-# GreenSettle: Phase 1 "Measure"
+# GreenSettle
 
-GreenSettle is a carbon-credit system for cloud workloads. Jobs run in greener
-time slots, and credits are settled **after** the run from **measured**
-energy. Phase 1 builds only the measurement layer:
+A carbon-credit system for cloud workloads. Users submit batch jobs with a
+declared wait tolerance, jobs run in greener time slots, and credits are
+settled **after** the run from **measured** energy.
 
-- read CPU power from LibreHardwareMonitor,
-- turn it into per-job energy with an uncertainty estimate,
-- convert that to gCO2e with an error band.
+| phase | what | explained in |
+|---|---|---|
+| 1 Measure | CPU power → per-job energy ± uncertainty → gCO2e ± error | [docs/phase1_explained.md](docs/phase1_explained.md) |
+| 2 Settle | settlement rule, append-only ledger, decay, tiers, gaming table | [docs/phase2_explained.md](docs/phase2_explained.md) |
+| 3 Schedule and enforce | API server, slot choice, queue, worker, client, demo | [docs/phase3_explained.md](docs/phase3_explained.md) |
 
-The plain-language explanation with a worked numeric example is in
-[`docs/phase1_explained.md`](docs/phase1_explained.md).
+Two functions are written by the student and are the core of the viva:
+`compute_settlement` (Phase 2, written) and `choose_slot` (Phase 3,
+**not written yet**: it raises `NotImplementedError` and its 19 tests fail
+until it is).
 
 ## Layout
 
 ```
-greensettle/                 <- project root (run all commands from here)
-  greensettle/               <- the Python package
-    agent/lhm_client.py      fetch + parse LHM data.json
-    agent/meter.py           sampler, idle calibration, integration, attribution, uncertainty
-    intensity/provider.py    simulated carbon-intensity curve + demo override
-    engine/convert.py        kWh + intensity -> gCO2e with error band
-    cli.py                   command-line interface
-  tools/burn.py              CPU burner (--seconds, --threads; capped at 60 s)
-  tests/                     pytest suite + mock LHM server (tests/mock_lhm.py)
+greensettle/                      <- project root (run all commands from here)
+  greensettle/                    <- the Python package
+    agent/lhm_client.py           fetch + parse LibreHardwareMonitor data.json
+    agent/meter.py                sampler, idle calibration, integration, attribution, uncertainty
+    agent/worker.py               Phase 3 worker (pulls jobs, runs them with the meter)
+    intensity/provider.py         simulated carbon-intensity curve
+    intensity/timeline.py         actual (with override timeline) vs forecast providers
+    engine/convert.py             kWh + intensity -> gCO2e with error band
+    settlement/rules.py           compute_settlement (student)
+    ledger/                       config, migrations, db (decay, allowance, tiers), settle_job, CLI commands
+    scheduler/slots.py            choose_slot (student, not written yet)
+    scheduler/{planner,dispatch,queue}.py   plan once, dispatch order, queue/claim/leases
+    jobs/                         the fixed job catalog: burn, hash, primes
+    server/                       FastAPI app, config, clock, store; python -m greensettle.server
+    client.py                     python -m greensettle.client
+    cli.py                        Phase 1 + 2 command line
+  experiments/gaming_table.py     can users farm credits? (results in experiments/results/)
+  experiments/e2e_demo.py         narrated end-to-end demo
+  tools/burn.py                   Phase 1 CPU burner (capped at 60 s)
+  tests/                          pytest suite, mock LHM server, fakes
   fixtures/lhm_data_sample.json   SYNTHETIC sample, see fixtures/README.md
-  docs/phase1_explained.md
-  data/                      runtime output (git-ignored): idle.json, measurements/, intensity_state.json
+  deploy/README.md                how a cloud deployment WOULD work (docs only)
+  data/                           runtime output (git-ignored)
 ```
-
-The package sits one level down (`greensettle/greensettle/`). That way
-`python -m greensettle.cli` and `python tools/burn.py` both work from the
-project root.
 
 ## Setup (Windows 11, PowerShell, native Python 3.11+)
 
@@ -41,55 +52,86 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-LibreHardwareMonitor must be running **as administrator** with
-*Options → Remote Web Server → Run* enabled on port 8085. To use a different
-URL, pass `--url http://host:port/data.json` or set the
-`GREENSETTLE_LHM_URL` environment variable.
+LibreHardwareMonitor must run **as administrator** with
+*Options → Remote Web Server → Run* on port 8085 (or set `--url` /
+`GREENSETTLE_LHM_URL`).
 
-## Commands
+## Phase 1: measure
 
 ```powershell
-python -m greensettle.cli check-sensor                  # server reachable? which sensors live/dead?
-python -m greensettle.cli dump-powers --save fixtures\lhm_data_sample.json   # capture real data.json
-python -m greensettle.cli calibrate-idle --seconds 30   # leave the laptop alone meanwhile
+python -m greensettle.cli check-sensor
+python -m greensettle.cli dump-powers --save fixtures\lhm_data_sample.json   # capture the REAL data.json
+python -m greensettle.cli calibrate-idle --seconds 30
 python -m greensettle.cli run -- python tools/burn.py --seconds 30 --threads 4
-python -m greensettle.cli intensity-force dirty         # or: green | off
-python -m greensettle.cli watch                         # live W and gCO2e/s, Ctrl+C to stop
+python -m greensettle.cli intensity-force dirty      # green | dirty | off
+python -m greensettle.cli watch
 ```
 
-Global options (put them **before** the command): `--url`, `--data-dir`
-(default `data`), `--interval` (poll seconds, default 1.0), `--intensity`
-(default `simulated`), `-v`.
+## Phase 2: settle (offline, no server)
 
-`run` writes `data/measurements/<job_id>.json` in the stable schema that later
-phases will read. The scope is `cpu_package`, because the Memory and Platform
-sensors are dead on this laptop.
+```powershell
+python -m greensettle.cli user-add alice
+python -m greensettle.cli allowance alice
+python -m greensettle.cli settle data\measurements\<job>.json --user alice `
+    --submit-time 2026-11-02T08:00:00+00:00 --run-time 2026-11-02T13:00:00+00:00
+python -m greensettle.cli balance alice
+python -m greensettle.cli ledger alice --limit 10
+python experiments\gaming_table.py
+```
+
+Use `--clock ISO` (or `$env:GREENSETTLE_CLOCK`) to set the simulated "now".
+
+## Phase 3: three terminals
+
+```powershell
+# tokens (once): python -c "import secrets; print(secrets.token_hex(32))"
+$env:GREENSETTLE_AGENT_TOKEN = "<token 1>"; $env:GREENSETTLE_ADMIN_TOKEN = "<token 2>"
+
+# terminal 1: server (binds 127.0.0.1)
+python -m greensettle.server --time-scale 600
+
+# terminal 2: worker, next to LibreHardwareMonitor (add --mock-lhm for a hardware-free run)
+python -m greensettle.agent.worker --server http://127.0.0.1:8000 --agent-id laptop
+
+# terminal 3: client
+python -m greensettle.client admin-user alice                  # copy the api_key it prints
+python -m greensettle.client admin-allowance alice
+$env:GREENSETTLE_API_KEY = "<alice's key>"
+python -m greensettle.client submit --type burn --param seconds=20 --param workers=2 --max-delay-h 6 --est-duration-s 25
+python -m greensettle.client status <job_id>
+python -m greensettle.client me
+python -m greensettle.client admin-intensity dirty             # demo flip, from the server's sim "now"
+
+# or everything in one process:
+python experiments\e2e_demo.py --mock-lhm --time-scale 600
+```
 
 ## Tests
 
 ```powershell
 python -m pytest                                    # hardware tests are skipped
-$env:GREENSETTLE_HARDWARE = "1"; python -m pytest   # also runs tests/test_hardware.py
+$env:GREENSETTLE_HARDWARE = "1"; python -m pytest   # also runs tests/test_hardware.py on the laptop
 ```
 
-The tests use `tests/mock_lhm.py`, a fake LHM web server, so they pass on any
-OS. You can also run the mock by hand for a demo without the real sensor:
-
-```powershell
-python tests/mock_lhm.py --follow-load     # fake CPU Package power follows real CPU load
-```
-
-## Placeholders
-
-All uncertainty coefficients are in `MeterConfig` (`greensettle/agent/meter.py`)
-and are **placeholders**, not measured values. The simulated intensity curve
-is **not** real grid data.
+Until `choose_slot` is written, exactly the 19 tests in `tests/test_slots.py`
+fail, each with `NotImplementedError: Phase 3: write choose_slot yourself`.
+Everything else uses a mock LHM, a fake clock and (where a plan is needed) a
+stand-in `choose_slot` from `tests/fakes.py`.
 
 ## Verification status
 
-| what | verified on |
-|---|---|
-| parser, integration, attribution, uncertainty, intensity, conversion, CLI | pytest, mock server (Linux) |
-| psutil CPU-time tracking (incl. exited children) | real processes (Linux) |
-| `check-sensor`, `calibrate-idle`, `run`, `watch` against the **real** LHM on the Windows laptop | **not yet** |
-| `fixtures/lhm_data_sample.json` matches real LHM 0.9.6 output | **not yet** (synthetic) |
+Everything so far was built and run in a **Linux cloud container**, not on
+the Windows laptop.
+
+| what | real laptop | mock / container only |
+|---|---|---|
+| LHM `data.json` structure (fixture is synthetic) | not yet | ✓ |
+| `check-sensor`, `calibrate-idle`, `run`, `watch` with the real sensor | not yet | ✓ (mock LHM) |
+| job CPU-time accuracy (`os.wait4` fix is POSIX-only; Windows keeps the tracker) | not yet | ✓ Linux: 118.8 of 120 CPU-s |
+| `compute_settlement` vectors and properties | n/a (pure code) | ✓ |
+| ledger, decay, tiers, allowance, `settle_job`, Phase 2 CLI | not yet | ✓ |
+| gaming table | n/a (simulation) | ✓ |
+| server, auth, limits, claim/leases, settlement on result | not yet | ✓ (in-process and real uvicorn) |
+| worker + client over HTTP | not yet | ✓ (mock LHM) |
+| e2e demo steps 3–5 | not yet | ✓ with a stand-in `choose_slot` only |
+| `choose_slot` | not written | not written |
