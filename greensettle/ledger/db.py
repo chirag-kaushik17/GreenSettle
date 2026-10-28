@@ -42,14 +42,16 @@ ENTRY_KINDS = ("allowance", "decay", "fee", "rebate", "surcharge")
 # --------------------------------------------------------------------------
 # Connection, transactions and time helpers
 # --------------------------------------------------------------------------
-def connect(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
+def connect(path: Path | str = DEFAULT_DB_PATH, check_same_thread: bool = True) -> sqlite3.Connection:
     """Open (creating if needed) the database and bring its schema up to date.
 
     Pass ":memory:" for a throwaway in-memory database (used by the tests).
+    check_same_thread=False is for the server, where one request's
+    connection may be handed between threads (never shared by two requests).
     """
     if str(path) != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")  # SQLite ignores REFERENCES unless this is on
     migrations.migrate(conn)  # create or upgrade the schema (see migrations.py)
@@ -90,16 +92,20 @@ def from_ts(ts: str) -> datetime:
 # --------------------------------------------------------------------------
 # Users and balances
 # --------------------------------------------------------------------------
-def create_user(conn: sqlite3.Connection, user_id: str, now: datetime) -> None:
-    """New users start with balance 0 and last_decay_at = creation time."""
+def create_user(conn: sqlite3.Connection, user_id: str, now: datetime, api_key_hash: str | None = None) -> None:
+    """New users start with balance 0 and last_decay_at = creation time.
+
+    api_key_hash (Phase 3 server only) is the SHA-256 of the user's API key,
+    stored in the same transaction as the user.
+    """
     if not user_id:
         raise ValueError("user_id must not be empty")
     ts = to_ts(now)
     try:
         with immediate(conn):
             conn.execute(
-                "INSERT INTO users (user_id, created_at, last_decay_at) VALUES (?, ?, ?)",
-                (user_id, ts, ts),
+                "INSERT INTO users (user_id, created_at, last_decay_at, api_key_hash) VALUES (?, ?, ?, ?)",
+                (user_id, ts, ts, api_key_hash),
             )
     except sqlite3.IntegrityError as exc:
         raise ValueError(f"user {user_id!r} already exists") from exc

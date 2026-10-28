@@ -21,9 +21,11 @@ schema_version = migrations.schema_version
 migrate = migrations.migrate
 
 
-def open_db(path: Path | str = ledger_db.DEFAULT_DB_PATH, timeout_s: float = 10.0) -> sqlite3.Connection:
-    """Open the server database (one connection per thread); connect() migrates it."""
-    conn = ledger_db.connect(path)
+def open_db(path: Path | str = ledger_db.DEFAULT_DB_PATH, timeout_s: float = 10.0,
+            check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open the server database; connect() migrates it. Use one connection per
+    thread or per request, never one shared connection."""
+    conn = ledger_db.connect(path, check_same_thread)
     conn.execute(f"PRAGMA busy_timeout = {int(timeout_s * 1000)}")  # wait instead of failing when locked
     return conn
 
