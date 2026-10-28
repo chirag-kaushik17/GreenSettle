@@ -106,6 +106,21 @@ python -m greensettle.client admin-intensity dirty             # demo flip, from
 python experiments\e2e_demo.py --mock-lhm --time-scale 600
 ```
 
+## Phase 4: dashboard
+
+Open `http://127.0.0.1:8000/dashboard` while the server runs and paste the
+admin token (kept in page memory only; never stored). It polls every 2 s.
+
+- **Clock and grid:** sim time, the 24 h actual vs forecast intensity
+  (simulated), override periods.
+- **Live power:** watts and gCO2e/s.
+- **Queue:** candidate slots of a queued job.
+- **Settlements:** zone, money and saved ± uncertainty.
+- **Users:** balance, tier, decay, sparkline.
+- **Explain:** the arithmetic of one settlement in words.
+
+One file, no external resources, served with a strict Content-Security-Policy.
+
 ## Tests
 
 ```powershell
@@ -134,4 +149,5 @@ the Windows laptop.
 | server, auth, limits, claim/leases, settlement on result | not yet | ✓ (in-process and real uvicorn) |
 | worker + client over HTTP | not yet | ✓ (mock LHM) |
 | e2e demo steps 3–5 | not yet | ✓ with a stand-in `choose_slot` only |
+| dashboard | not yet | ✓ rendered in headless Chromium (light, dark, 390 px) against a scratch server with stand-in plans |
 | `choose_slot` | not written | not written |

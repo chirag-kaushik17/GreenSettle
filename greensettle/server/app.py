@@ -24,12 +24,14 @@ import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import timedelta
+from pathlib import Path
 from typing import Any, Callable, Iterator, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from greensettle.intensity.provider import SimulatedCurve
@@ -46,6 +48,19 @@ from greensettle.server.clock import Clock, RealTimeFn
 from greensettle.server.config import ServerConfig
 
 log = logging.getLogger("greensettle.server")
+
+DASHBOARD_FILE = Path(__file__).resolve().parent / "static" / "dashboard.html"
+# The dashboard is one self-contained file: no CDN, no web fonts, no external
+# requests. This policy makes the browser enforce that.
+DASHBOARD_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+        "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
 
 ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"  # user ids: lowercase, short, no spaces
 AGENT_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
@@ -340,7 +355,8 @@ def create_app(config: ServerConfig, real_time: RealTimeFn = time.time, choose: 
     def admin_state(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
         now = state.clock.now()
         jobs = conn.execute(
-            "SELECT job_id, user_id, status, planned_start, latest_start, claimed_by, lease_expires_real "
+            "SELECT job_id, user_id, job_type, status, submitted_at, planned_start, latest_start, "
+            "declared_window_h, est_duration_s, claimed_by, lease_expires_real, plan_json "
             "FROM jobs WHERE status IN ('queued', 'running') ORDER BY planned_start"
         ).fetchall()
         settlements = conn.execute(
@@ -348,23 +364,109 @@ def create_app(config: ServerConfig, real_time: RealTimeFn = time.time, choose: 
             "FROM settlements ORDER BY settled_at DESC, job_id DESC LIMIT 20"
         ).fetchall()
         users = []
-        for row in conn.execute("SELECT user_id FROM users ORDER BY user_id"):
-            bal = ledger_db.balance_micro(conn, row["user_id"])
-            users.append({"user_id": row["user_id"], "balance": credits(bal),
-                          "tier": tier_for(credits(bal), config.ledger.tiers).name})
+        for row in conn.execute("SELECT user_id, last_decay_at FROM users ORDER BY user_id"):
+            uid = row["user_id"]
+            bal = ledger_db.balance_micro(conn, uid)
+            decayed = conn.execute("SELECT COALESCE(SUM(amount_micro), 0) FROM ledger "
+                                   "WHERE user_id = ? AND kind = 'decay'", (uid,)).fetchone()[0]
+            series = conn.execute(
+                "SELECT ts, balance_micro FROM (SELECT entry_id, ts, balance_micro FROM ledger_with_balance "
+                "WHERE user_id = ? ORDER BY entry_id DESC LIMIT 60) ORDER BY entry_id", (uid,)).fetchall()
+            users.append({"user_id": uid, "balance": credits(bal),
+                          "tier": tier_for(credits(bal), config.ledger.tiers).name,
+                          "decay_total": credits(-decayed), "last_decay_at": row["last_decay_at"],
+                          "balance_series": [[r["ts"], credits(r["balance_micro"])] for r in series]})
+
+        def job_row(j: sqlite3.Row) -> dict[str, Any]:
+            out = {k: j[k] for k in j.keys() if k != "plan_json"}
+            out["max_delay_h"] = out.pop("declared_window_h")
+            out["plan"] = json.loads(j["plan_json"]) if j["plan_json"] else None
+            return out
+
         return {
             "sim_now": now.isoformat(),
             "time_scale": state.clock.scale,
             "intensity_now": state.actual(conn).get(now)._asdict(),
-            "queue": [dict(j) | {"ready": store.parse_ts(j["planned_start"]) <= now}
+            "queue": [job_row(j) | {"ready": store.parse_ts(j["planned_start"]) <= now}
                       for j in jobs if j["status"] == "queued"],
-            "running": [dict(j) for j in jobs if j["status"] == "running"],
+            "running": [job_row(j) for j in jobs if j["status"] == "running"],
             "settlements": [{"job_id": s["job_id"], "user_id": s["user_id"], "zone": s["zone"],
                              "fee": credits(s["fee_micro"]), "rebate": credits(s["rebate_micro"]),
                              "surcharge": credits(s["surcharge_micro"]), "net": credits(s["net_micro"]),
                              "settled_at": s["settled_at"]} for s in settlements],
             "users": users,
         }
+
+    @app.get("/admin/history", dependencies=[Depends(require_admin)])
+    def admin_history(n: int = Query(default=200, ge=1, le=1000),
+                      conn: sqlite3.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
+        """Settled jobs, newest first, with every number the settlement used,
+        the plan, and the sim run window. Read-only."""
+        rows = conn.execute(
+            """SELECT s.*, j.job_type, j.params_json AS job_params_json, j.submitted_at, j.planned_start, j.plan_json,
+                      j.started_real, j.ended_real, j.declared_window_h
+               FROM settlements s JOIN jobs j ON j.job_id = s.job_id
+               ORDER BY s.settled_at DESC, s.job_id DESC LIMIT ?""", (n,)).fetchall()
+        out = []
+        for r in rows:
+            started, ended = r["started_real"], r["ended_real"]
+            out.append({
+                "job_id": r["job_id"], "user_id": r["user_id"], "job_type": r["job_type"],
+                "params": json.loads(r["job_params_json"]) if r["job_params_json"] else None,
+                "submitted_at": r["submitted_at"], "planned_start": r["planned_start"],
+                "max_delay_h": r["declared_window_h"],
+                "run_start_sim": state.clock.real_to_sim(started).isoformat() if started is not None else None,
+                "run_end_sim": state.clock.real_to_sim(ended).isoformat() if ended is not None else None,
+                "settled_at": r["settled_at"], "zone": r["zone"],
+                "energy_kwh": r["energy_kwh"], "energy_unc_kwh": r["energy_unc_kwh"],
+                "i_submit": r["i_submit"], "i_submit_unc": r["i_submit_unc"],
+                "i_run": r["i_run"], "i_run_unc": r["i_run_unc"],
+                "saved_g": r["saved_g"], "saved_unc_g": r["saved_unc_g"],
+                "fee": credits(r["fee_micro"]), "rebate": credits(r["rebate_micro"]),
+                "surcharge": credits(r["surcharge_micro"]), "net": credits(r["net_micro"]),
+                "settlement_params": json.loads(r["params_json"]),  # p, rho, gamma, k, sigma used
+                "plan": json.loads(r["plan_json"]) if r["plan_json"] else None,
+            })
+        return out
+
+    @app.get("/admin/intensity_curve", dependencies=[Depends(require_admin)])
+    def admin_intensity_curve(hours: float = Query(default=24, ge=1, le=72),
+                              conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+        """Actual and forecast intensity around now, for the dashboard. Read-only.
+
+        Window: from hours/4 before now to 3*hours/4 after (the future matters
+        for scheduling). ACTUAL = simulated curve + override timeline; for future
+        times it assumes no further overrides. FORECAST = issued now, no
+        overrides, simulated error growing with lead time (future points only).
+        """
+        now = state.clock.now()
+        start, end = now - timedelta(hours=hours / 4), now + timedelta(hours=3 * hours / 4)
+        step = timedelta(minutes=15)
+        actual = state.actual(conn)
+        actual_series, forecast_series = [], []
+        t = start
+        while t <= end:
+            a = actual.get(t)
+            actual_series.append({"t": t.isoformat(), "g": a.g_per_kwh, "unc": a.unc_g_per_kwh})
+            if t >= now:
+                g, unc = state.forecast.point(t, issued_at=now)
+                forecast_series.append({"t": t.isoformat(), "g": g, "unc": unc})
+            t += step
+        entries = actual.timeline.entries
+        overrides = []
+        for i, (frm, st) in enumerate(entries):
+            until = entries[i + 1][0] if i + 1 < len(entries) else end
+            if st in ("green", "dirty") and until > start and frm < end:
+                overrides.append({"from": max(frm, start).isoformat(), "to": min(until, end).isoformat(),
+                                  "state": st})
+        return {"now": now.isoformat(), "from": start.isoformat(), "to": end.isoformat(),
+                "simulated": True, "actual": actual_series, "forecast": forecast_series, "overrides": overrides,
+                "note": "simulated grid curve; forecast error is simulated (placeholder model)"}
+
+    # ---- dashboard (static page; its data calls need the admin token) -----------
+    @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+    def dashboard() -> HTMLResponse:
+        return HTMLResponse(DASHBOARD_FILE.read_text(encoding="utf-8"), headers=DASHBOARD_HEADERS)
 
     # ---- users: jobs and balance ---------------------------------------------
     @app.post("/jobs", status_code=201)

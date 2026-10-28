@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GreenSettle dashboard</title>
+<style>
+/* Colour roles (validated: series pair passes all checks in light and dark). */
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834;
+  --pos: #2a78d6; --neg: #e34948;               /* diverging pair for saved (+) / extra (-) */
+  --good: #0ca30c; --critical: #d03b3b; --neutral: #898781;
+  --wash-green: rgba(12,163,12,0.10); --wash-dirty: rgba(208,59,59,0.10);
+  --focus: #2a78d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --pos: #3987e5; --neg: #e66767;
+    --wash-green: rgba(12,163,12,0.16); --wash-dirty: rgba(208,59,59,0.18); --focus: #3987e5;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #d95926; --pos: #3987e5; --neg: #e66767;
+  --wash-green: rgba(12,163,12,0.16); --wash-dirty: rgba(208,59,59,0.18); --focus: #3987e5;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; justify-content: space-between;
+         padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--surface); }
+header h1 { font-size: 18px; margin: 0; }
+header .sub { color: var(--ink-2); font-size: 13px; }
+form.connect { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+input, button { font: inherit; color: inherit; }
+input[type=password] { padding: 6px 10px; border: 1px solid var(--axis); border-radius: 6px; background: var(--page);
+                       min-width: 220px; }
+button { padding: 6px 12px; border: 1px solid var(--axis); border-radius: 6px; background: var(--surface); cursor: pointer; }
+button:hover { background: var(--page); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+#status { color: var(--ink-2); font-size: 13px; min-height: 1.4em; padding: 8px 24px 0; }
+#status.error { color: var(--critical); }
+main { display: grid; gap: 16px; padding: 16px 24px 24px;
+       grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-width: 0; }
+.wide { grid-column: 1 / -1; }
+h2 { font-size: 15px; margin: 0 0 4px; }
+.caption { color: var(--ink-2); font-size: 12.5px; margin: 0 0 10px; }
+.tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--axis);
+       color: var(--ink-2); vertical-align: 1px; margin-left: 6px; }
+.tiles { display: flex; flex-wrap: wrap; gap: 10px 28px; margin: 6px 0 10px; }
+.tile .label { color: var(--ink-2); font-size: 12px; }
+.tile .value { font-size: 22px; font-weight: 600; }
+.tile .unit { color: var(--ink-2); font-size: 12px; margin-left: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--ink-2); margin: 4px 0 6px; }
+.legend .sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.legend .box { display: inline-block; width: 12px; height: 10px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart.wide-chart { overflow-x: auto; }
+@media (max-width: 700px) { .chart.wide-chart svg { min-width: 640px; } }  /* keep labels readable; scroll inside the card */
+.tooltip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+           border-radius: 6px; padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+           white-space: nowrap; display: none; z-index: 2; }
+details { margin-top: 8px; font-size: 12.5px; }
+details summary { cursor: pointer; color: var(--ink-2); }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { color: var(--ink-2); font-weight: 600; font-size: 12px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover, tr.selected { background: var(--page); }
+.zone { display: inline-flex; align-items: center; gap: 6px; }
+.zone .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.list { list-style: none; margin: 0 0 10px; padding: 0; }
+.list li { padding: 6px 8px; border-bottom: 1px solid var(--grid); display: flex; gap: 10px; flex-wrap: wrap;
+           justify-content: space-between; }
+.list li.clickable { cursor: pointer; }
+.list li.selected { background: var(--page); }
+.muted { color: var(--muted); }
+.subhead { font-size: 12px; color: var(--ink-2); font-weight: 600; margin: 10px 0 4px; text-transform: uppercase;
+           letter-spacing: 0.04em; }
+#explain-body p { margin: 0 0 8px; }
+#explain-body .verdict { font-weight: 600; }
+footer { color: var(--ink-2); font-size: 12px; padding: 0 24px 24px; }
+@media (max-width: 600px) {
+  header, main, footer { padding-left: 16px; padding-right: 16px; }
+  #status { padding-left: 16px; }
+  input[type=password] { min-width: 0; width: 100%; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>GreenSettle</h1>
+    <div class="sub">Live view of the scheduler, settlements and ledger. Grid intensity is <strong>simulated</strong>.</div>
+  </div>
+  <form class="connect" id="connect-form" autocomplete="off">
+    <label for="token">Admin token</label>
+    <input type="password" id="token" placeholder="kept in memory only" autocomplete="off" spellcheck="false">
+    <button type="submit" id="connect-btn">Connect</button>
+    <button type="button" id="disconnect-btn" hidden>Disconnect</button>
+    <button type="button" id="theme-btn" aria-label="Colour theme">Theme: auto</button>
+  </form>
+</header>
+<div id="status" role="status" aria-live="polite">Enter the admin token to start. It is never stored.</div>
+
+<main>
+  <section class="card wide" aria-labelledby="h-clock">
+    <h2 id="h-clock">Clock and grid <span class="tag">simulated</span></h2>
+    <div class="tiles">
+      <div class="tile"><div class="label">Simulated time (UTC)</div><div class="value" id="sim-now">–</div></div>
+      <div class="tile"><div class="label">Time scale</div><div class="value" id="scale">–</div></div>
+      <div class="tile"><div class="label">Actual intensity now (simulated)</div><div class="value"><span id="int-now">–</span><span class="unit">g/kWh</span></div></div>
+    </div>
+    <div class="legend" aria-hidden="true">
+      <span><span class="sw" style="background:var(--series-1)"></span>Actual: simulated curve + demo overrides</span>
+      <span><span class="sw" style="background:var(--series-2)"></span>Forecast issued now, band = ±1σ (simulated error)</span>
+      <span><span class="box" style="background:var(--wash-green)"></span>green override</span>
+      <span><span class="box" style="background:var(--wash-dirty)"></span>dirty override</span>
+    </div>
+    <div class="chart wide-chart" id="grid-chart"></div>
+    <details><summary>Data table</summary><div class="scroll" id="grid-table"></div></details>
+  </section>
+
+  <section class="card" aria-labelledby="h-power">
+    <h2 id="h-power">Live power</h2>
+    <p class="caption">CPU package power reported by the worker (last 60 samples). gCO2e/s uses the simulated actual intensity at each sample's time.</p>
+    <div class="tiles">
+      <div class="tile"><div class="label">CPU package</div><div class="value"><span id="watts">–</span><span class="unit">W</span></div></div>
+      <div class="tile"><div class="label">Emissions (simulated grid)</div><div class="value"><span id="gps">–</span><span class="unit">gCO2e/s</span></div></div>
+    </div>
+    <div class="chart" id="power-chart"></div>
+    <details><summary>Data table</summary><div class="scroll" id="power-table"></div></details>
+  </section>
+
+  <section class="card" aria-labelledby="h-queue">
+    <h2 id="h-queue">Queue</h2>
+    <div class="subhead">Queued (select one to see its candidate slots)</div>
+    <ul class="list" id="queued"></ul>
+    <div class="chart" id="cand-chart"></div>
+    <p class="caption" id="cand-caption"></p>
+    <div class="subhead">Running</div>
+    <ul class="list" id="running"></ul>
+    <div class="subhead">Done (latest 10)</div>
+    <ul class="list" id="done"></ul>
+  </section>
+
+  <section class="card wide" aria-labelledby="h-settle">
+    <h2 id="h-settle">Settlements</h2>
+    <p class="caption">Latest 20. Click a row (or focus it and press Enter) to see its arithmetic. Saved bar: blue = saving, red = extra emissions; the whisker is ± one standard uncertainty.</p>
+    <div class="scroll" id="settle-table"></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-users">
+    <h2 id="h-users">Users</h2>
+    <p class="caption">Balance from the ledger (sum of all rows), tier from the balance after decay, total decay so far, and balance over the last 60 ledger rows.</p>
+    <div class="scroll" id="users-table"></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-explain">
+    <h2 id="h-explain">Explain a settlement</h2>
+    <div id="explain-body"><p class="muted">Select a settlement row.</p></div>
+  </section>
+</main>
+<footer>
+  Simulated: the grid intensity curve, demo overrides, and the forecast error model. Every parameter (p, ρ, γ, k, σ,
+  tiers, decay half-life, uncertainty coefficients) is a placeholder. Settlement numbers come from the server's
+  ledger; the explanation re-states them in words.
+</footer>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// State: the token lives in this variable only (never in storage or the URL).
+// ---------------------------------------------------------------------------
+let token = null;
+let timer = null;
+let busy = false;
+let tick = 0;
+let curve = null;
+let selectedQueued = null;
+let selectedSettlement = null;
+let lastHistory = [];
+
+const NS = "http://www.w3.org/2000/svg";
+const $ = (id) => document.getElementById(id);
+
+// ---------------------------------------------------------------------------
+// Small helpers (all text goes through textContent: server data is never HTML)
+// ---------------------------------------------------------------------------
+function h(tag, attrs, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else if (k === "style") e.style.cssText = v; else e.setAttribute(k, v);
+  }
+  for (const c of children) e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return e;
+}
+function s(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function stext(parent, x, y, str, attrs) {
+  const t = s("text", Object.assign({ x, y, fill: "var(--muted)", "font-size": 11 }, attrs || {}), parent);
+  t.textContent = str;
+  return t;
+}
+const fmt = (n, d = 2) => (n === null || n === undefined || !isFinite(n)) ? "–" : Number(n).toFixed(d);
+const sig = (n, d = 3) => (n === null || n === undefined || !isFinite(n)) ? "–" : Number(n).toPrecision(d);
+const hhmm = (iso) => iso ? iso.slice(11, 16) : "–";
+const dayhhmm = (iso) => iso ? `${iso.slice(5, 10)} ${iso.slice(11, 16)}` : "–";
+const t = (iso) => Date.parse(iso);
+
+function setStatus(msg, isError) {
+  $("status").textContent = msg;
+  $("status").className = isError ? "error" : "";
+}
+
+async function api(path) {
+  const r = await fetch(path, { headers: { "X-Admin-Token": token }, cache: "no-store" });
+  if (r.status === 401) throw new Error("401: the admin token was rejected");
+  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Connect / poll
+// ---------------------------------------------------------------------------
+$("connect-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const value = $("token").value.trim();
+  if (!value) return;
+  token = value;
+  $("token").value = "";          // do not leave it in the field
+  try {
+    await poll(true);
+    $("disconnect-btn").hidden = false;
+    $("connect-btn").hidden = true;
+    clearInterval(timer);
+    timer = setInterval(() => poll(false), 2000);
+  } catch (e) {
+    token = null;
+    setStatus(String(e.message || e), true);
+  }
+});
+$("disconnect-btn").addEventListener("click", () => {
+  clearInterval(timer); timer = null; token = null;
+  $("disconnect-btn").hidden = true; $("connect-btn").hidden = false;
+  setStatus("Disconnected. The token was dropped from memory.");
+});
+const themes = ["auto", "light", "dark"];
+$("theme-btn").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme") || "auto";
+  const next = themes[(themes.indexOf(cur) + 1) % themes.length];
+  if (next === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", next);
+  $("theme-btn").textContent = `Theme: ${next}`;
+});
+
+async function poll(first) {
+  if (!token || busy) return;
+  busy = true;
+  try {
+    const needCurve = first || !curve || tick % 5 === 0;   // the curve changes slowly: every 10 s
+    const [state, telemetry, history, newCurve] = await Promise.all([
+      api("/admin/state"), api("/telemetry/latest?n=60"), api("/admin/history?n=200"),
+      needCurve ? api("/admin/intensity_curve?hours=24") : Promise.resolve(null),
+    ]);
+    if (newCurve) curve = newCurve;
+    tick += 1;
+    lastHistory = history;
+    renderClock(state);
+    if (curve) renderGrid(curve);
+    renderPower(telemetry);
+    renderQueue(state, history);
+    renderSettlements(history);
+    renderUsers(state);
+    if (selectedSettlement) {
+      const row = history.find((r) => r.job_id === selectedSettlement);
+      if (row) renderExplain(row);
+    }
+    setStatus(`Connected. Last update ${new Date().toLocaleTimeString()} (every 2 s).`);
+  } catch (e) {
+    setStatus(String(e.message || e), true);
+    if (String(e.message).startsWith("401")) { clearInterval(timer); token = null;
+      $("disconnect-btn").hidden = true; $("connect-btn").hidden = false; }
+    if (first) throw e;
+  } finally {
+    busy = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Generic line-chart pieces
+// ---------------------------------------------------------------------------
+function frame(container, W, H) {
+  container.replaceChildren();
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+  container.appendChild(svg);
+  const tip = h("div", { class: "tooltip" });
+  container.appendChild(tip);
+  return { svg, tip };
+}
+function niceMax(v, step) { return Math.max(step, Math.ceil(v / step) * step); }
+function yAxis(svg, m, W, H, yMax, step, unit) {
+  for (let v = 0; v <= yMax + 1e-9; v += step) {
+    const y = m.t + (H - m.t - m.b) * (1 - v / yMax);
+    s("line", { x1: m.l, x2: W - m.r, y1: y, y2: y, stroke: v === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }, svg);
+    stext(svg, m.l - 6, y + 4, `${v}`, { "text-anchor": "end", "font-variant-numeric": "tabular-nums" });
+  }
+  if (unit) stext(svg, 2, m.t - 12, unit, { "text-anchor": "start" });   // above the plot, clear of the top tick
+}
+function path(points) {
+  return points.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
+}
+function hoverLayer(svg, tip, container, m, W, H, xs, onIndex) {
+  const cross = s("line", { y1: m.t, y2: H - m.b, stroke: "var(--ink-2)", "stroke-width": 1, visibility: "hidden" }, svg);
+  const hit = s("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent" }, svg);
+  hit.addEventListener("mousemove", (ev) => {
+    const box = svg.getBoundingClientRect();
+    const x = (ev.clientX - box.left) * (W / box.width);
+    let best = 0;
+    xs.forEach((v, i) => { if (Math.abs(v - x) < Math.abs(xs[best] - x)) best = i; });
+    cross.setAttribute("x1", xs[best]); cross.setAttribute("x2", xs[best]);
+    cross.setAttribute("visibility", "visible");
+    tip.replaceChildren(...onIndex(best));
+    tip.style.display = "block";
+    const px = (xs[best] / W) * box.width;
+    tip.style.left = `${Math.min(px + 12, box.width - tip.offsetWidth - 4)}px`;
+    tip.style.top = "8px";
+  });
+  hit.addEventListener("mouseleave", () => { cross.setAttribute("visibility", "hidden"); tip.style.display = "none"; });
+}
+
+// ---------------------------------------------------------------------------
+// Panel 1: clock and grid
+// ---------------------------------------------------------------------------
+function renderClock(state) {
+  $("sim-now").textContent = dayhhmm(state.sim_now);
+  $("scale").textContent = `×${state.time_scale}`;
+  $("int-now").textContent = fmt(state.intensity_now.g_per_kwh, 0);
+}
+
+function renderGrid(c) {
+  const W = 760, H = 280, m = { l: 46, r: 14, t: 28, b: 28 };
+  const { svg, tip } = frame($("grid-chart"), W, H);
+  svg.setAttribute("aria-label", "Simulated grid intensity, actual and forecast, over 24 hours");
+  const x0 = t(c.from), x1 = t(c.to);
+  const X = (iso) => m.l + (W - m.l - m.r) * (t(iso) - x0) / (x1 - x0);
+  const peak = Math.max(...c.actual.map((p) => p.g), ...c.forecast.map((p) => p.g + p.unc));
+  const yMax = niceMax(peak * 1.05, 200);
+  const Y = (v) => m.t + (H - m.t - m.b) * (1 - v / yMax);
+
+  for (const o of c.overrides) {      // shaded override periods, labelled in text
+    const xa = X(o.from), xb = X(o.to);
+    s("rect", { x: xa, y: m.t, width: Math.max(0, xb - xa), height: H - m.t - m.b,
+                fill: o.state === "green" ? "var(--wash-green)" : "var(--wash-dirty)" }, svg);
+    if (xb - xa > 60) stext(svg, xa + 4, m.t + 12, `${o.state} override`, { fill: "var(--ink-2)" });
+  }
+  yAxis(svg, m, W, H, yMax, 200, "g/kWh");
+  for (let ms = Math.ceil(x0 / 10800000) * 10800000; ms <= x1; ms += 10800000) {   // every 3 h
+    const x = m.l + (W - m.l - m.r) * (ms - x0) / (x1 - x0);
+    stext(svg, x, H - 8, new Date(ms).toISOString().slice(11, 16), { "text-anchor": "middle" });
+  }
+  if (c.forecast.length) {
+    const up = c.forecast.map((p) => [X(p.t), Y(p.g + p.unc)]);
+    const down = c.forecast.map((p) => [X(p.t), Y(Math.max(0, p.g - p.unc))]).reverse();
+    s("path", { d: path(up.concat(down)) + "Z", fill: "var(--series-2)", "fill-opacity": 0.15 }, svg);
+    s("path", { d: path(c.forecast.map((p) => [X(p.t), Y(p.g)])), fill: "none", stroke: "var(--series-2)",
+                "stroke-width": 2, "stroke-linejoin": "round" }, svg);
+  }
+  s("path", { d: path(c.actual.map((p) => [X(p.t), Y(p.g)])), fill: "none", stroke: "var(--series-1)",
+              "stroke-width": 2, "stroke-linejoin": "round" }, svg);
+  const xn = X(c.now);
+  s("line", { x1: xn, x2: xn, y1: m.t, y2: H - m.b, stroke: "var(--ink)", "stroke-width": 1 }, svg);
+  stext(svg, xn + 4, H - m.b - 6, "now", { fill: "var(--ink)", "font-weight": 600 });
+
+  const fc = new Map(c.forecast.map((p) => [p.t, p]));
+  const xs = c.actual.map((p) => X(p.t));
+  hoverLayer(svg, tip, $("grid-chart"), m, W, H, xs, (i) => {
+    const a = c.actual[i], f = fc.get(a.t);
+    const lines = [h("div", { style: "font-weight:600" }, `${dayhhmm(a.t)} UTC (sim)`),
+                   h("div", {}, `actual ${fmt(a.g, 0)} g/kWh (simulated)`)];
+    if (f) lines.push(h("div", {}, `forecast ${fmt(f.g, 0)} ± ${fmt(f.unc, 0)} g/kWh`));
+    return lines;
+  });
+
+  const rows = c.actual.filter((_, i) => i % 4 === 0).map((a) => {
+    const f = fc.get(a.t);
+    return h("tr", {}, h("td", {}, dayhhmm(a.t)), h("td", { class: "num" }, fmt(a.g, 0)),
+             h("td", { class: "num" }, f ? `${fmt(f.g, 0)} ± ${fmt(f.unc, 0)}` : "–"));
+  });
+  $("grid-table").replaceChildren(h("table", {},
+    h("thead", {}, h("tr", {}, h("th", {}, "Sim time (UTC)"), h("th", { class: "num" }, "Actual g/kWh (simulated)"),
+                     h("th", { class: "num" }, "Forecast ± 1σ"))), h("tbody", {}, ...rows)));
+}
+
+// ---------------------------------------------------------------------------
+// Panel 2: live power
+// ---------------------------------------------------------------------------
+function renderPower(rows) {
+  const pts = rows.slice().reverse();      // oldest first
+  const last = rows[0];
+  $("watts").textContent = last ? fmt(last.watts, 1) : "–";
+  $("gps").textContent = last ? sig(last.gco2e_per_s, 3) : "–";
+  const W = 420, H = 190, m = { l: 40, r: 10, t: 28, b: 26 };
+  const { svg, tip } = frame($("power-chart"), W, H);
+  svg.setAttribute("aria-label", "CPU package power over the last 60 samples");
+  if (!pts.length) { stext(svg, W / 2, H / 2, "no telemetry yet: is the worker running?", { "text-anchor": "middle" }); return; }
+  const tEnd = pts[pts.length - 1].ts_real, tStart = Math.min(pts[0].ts_real, tEnd - 60);
+  const X = (ts) => m.l + (W - m.l - m.r) * (ts - tStart) / Math.max(1, tEnd - tStart);
+  const yMax = niceMax(Math.max(...pts.map((p) => p.watts)) * 1.1, 10);
+  const Y = (v) => m.t + (H - m.t - m.b) * (1 - v / yMax);
+  yAxis(svg, m, W, H, yMax, yMax <= 50 ? 10 : 20, "W");
+  stext(svg, m.l, H - 8, `${Math.round(tEnd - tStart)} s ago`, {});
+  stext(svg, W - m.r, H - 8, "now", { "text-anchor": "end" });
+  s("path", { d: path(pts.map((p) => [X(p.ts_real), Y(p.watts)])), fill: "none", stroke: "var(--series-1)",
+              "stroke-width": 2, "stroke-linejoin": "round" }, svg);
+  const xs = pts.map((p) => X(p.ts_real));
+  hoverLayer(svg, tip, $("power-chart"), m, W, H, xs, (i) => [
+    h("div", { style: "font-weight:600" }, `${Math.round(tEnd - pts[i].ts_real)} s ago`),
+    h("div", {}, `${fmt(pts[i].watts, 1)} W`),
+    h("div", {}, `${sig(pts[i].gco2e_per_s, 3)} gCO2e/s at ${fmt(pts[i].g_per_kwh, 0)} g/kWh (simulated)`)]);
+  $("power-table").replaceChildren(h("table", {},
+    h("thead", {}, h("tr", {}, h("th", {}, "Seconds ago"), h("th", { class: "num" }, "W"),
+                     h("th", { class: "num" }, "g/kWh (sim)"), h("th", { class: "num" }, "gCO2e/s"))),
+    h("tbody", {}, ...rows.map((p) => h("tr", {}, h("td", {}, Math.round(tEnd - p.ts_real)),
+      h("td", { class: "num" }, fmt(p.watts, 1)), h("td", { class: "num" }, fmt(p.g_per_kwh, 0)),
+      h("td", { class: "num" }, sig(p.gco2e_per_s, 3)))))));
+}
+
+// ---------------------------------------------------------------------------
+// Panel 3: queue, with the candidate-slot chart for one queued job
+// ---------------------------------------------------------------------------
+function zoneChip(zone) {
+  const map = { saving: ["var(--good)", "✓ saving"], dead_zone: ["var(--neutral)", "○ dead zone"],
+                backfire: ["var(--critical)", "▲ backfire"] };
+  const [colour, label] = map[zone] || ["var(--neutral)", zone];
+  return h("span", { class: "zone" }, h("span", { class: "dot", style: `background:${colour}` }), label);
+}
+
+function renderQueue(state, history) {
+  const queued = state.queue;
+  if (!queued.find((j) => j.job_id === selectedQueued)) selectedQueued = queued.length ? queued[0].job_id : null;
+  $("queued").replaceChildren(...(queued.length ? queued.map((j) => {
+    const saving = j.plan ? `${fmt(j.plan.expected_saving, 0)} g/kWh forecast saving` : "";
+    const li = h("li", { class: "clickable" + (j.job_id === selectedQueued ? " selected" : ""), tabindex: 0 },
+      h("span", {}, `${j.job_id} · ${j.user_id} · ${j.job_type}`),
+      h("span", { class: "muted" }, `start ${hhmm(j.planned_start)} · window to ${hhmm(j.latest_start)} · ${saving}${j.ready ? " · READY" : ""}`));
+    const pick = () => { selectedQueued = j.job_id; renderQueue(state, history); };
+    li.addEventListener("click", pick);
+    li.addEventListener("keydown", (e) => { if (e.key === "Enter") pick(); });
+    return li;
+  }) : [h("li", { class: "muted" }, "nothing queued")]));
+  $("running").replaceChildren(...(state.running.length ? state.running.map((j) =>
+    h("li", {}, h("span", {}, `${j.job_id} · ${j.user_id} · ${j.job_type}`),
+      h("span", { class: "muted" }, `on ${j.claimed_by}`))) : [h("li", { class: "muted" }, "nothing running")]));
+  $("done").replaceChildren(...(history.length ? history.slice(0, 10).map((r) =>
+    h("li", {}, h("span", {}, `${r.job_id} · ${r.user_id}`), zoneChip(r.zone))) : [h("li", { class: "muted" }, "nothing settled yet")]));
+  renderCandidates(queued.find((j) => j.job_id === selectedQueued));
+}
+
+function renderCandidates(job) {
+  const W = 420, H = 200, m = { l: 40, r: 10, t: 32, b: 30 };
+  const { svg } = frame($("cand-chart"), W, H);
+  const cands = job && job.plan ? job.plan.candidates : [];
+  if (!job || !cands.length) {
+    stext(svg, W / 2, H / 2, job ? "no candidate slots recorded for this plan" : "select a queued job", { "text-anchor": "middle" });
+    $("cand-caption").textContent = "";
+    return;
+  }
+  svg.setAttribute("aria-label", `Forecast for each candidate start of ${job.job_id}`);
+  const yMax = niceMax(Math.max(...cands.map((c) => c[1] + c[2])) * 1.1, 100);
+  const Y = (v) => m.t + (H - m.t - m.b) * (1 - v / yMax);
+  const step = (W - m.l - m.r) / cands.length;
+  const X = (i) => m.l + step * (i + 0.5);
+  yAxis(svg, m, W, H, yMax, yMax > 600 ? 200 : 100, "g/kWh");
+  const labelEvery = Math.ceil(cands.length / 6);
+  cands.forEach(([start, mean, unc], i) => {
+    const chosen = start === job.plan.start || (Date.parse(start) === Date.parse(job.plan.start));
+    const x = X(i);
+    s("line", { x1: x, x2: x, y1: Y(mean + unc), y2: Y(Math.max(0, mean - unc)),
+                stroke: chosen ? "var(--series-1)" : "var(--muted)", "stroke-width": 1.5 }, svg);
+    const dot = s("circle", { cx: x, cy: Y(mean), r: chosen ? 6 : 4, fill: chosen ? "var(--series-1)" : "var(--muted)",
+                              stroke: "var(--surface)", "stroke-width": 2 }, svg);
+    s("title", {}, dot).textContent = `${hhmm(start)}: ${fmt(mean, 0)} ± ${fmt(unc, 0)} g/kWh${chosen ? " (chosen)" : ""}`;
+    if (i % labelEvery === 0 || chosen) stext(svg, x, H - 12, hhmm(start), { "text-anchor": "middle" });
+    if (i === 0) stext(svg, x, m.t - 14, "now", { "text-anchor": "middle", fill: "var(--ink)", "font-weight": 600 });
+    if (chosen) stext(svg, x, Y(mean + unc) - 6, "chosen", { "text-anchor": "middle", fill: "var(--ink)", "font-weight": 600 });
+  });
+  const p = job.plan;
+  $("cand-caption").textContent = `${job.job_id}: ${p.reason}. Forecast now ${fmt(p.forecast_now_mean, 0)} g/kWh, ` +
+    `chosen ${fmt(p.forecast_mean, 0)} ± ${fmt(p.forecast_unc, 0)}, expected saving ${fmt(p.expected_saving, 0)} g/kWh ` +
+    `(forecast error is simulated). Wait window ${job.max_delay_h} h.`;
+}
+
+// ---------------------------------------------------------------------------
+// Panel 4: settlements
+// ---------------------------------------------------------------------------
+function savedBar(row, scale) {
+  const W = 150, H = 22, mid = W / 2, half = W / 2 - 6;
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
+                         "aria-label": `saved ${row.saved_g} ± ${row.saved_unc_g} g` });
+  const X = (v) => mid + half * Math.max(-1, Math.min(1, v / scale));
+  s("line", { x1: mid, x2: mid, y1: 2, y2: H - 2, stroke: "var(--axis)", "stroke-width": 1 }, svg);
+  const xa = Math.min(mid, X(row.saved_g)), xb = Math.max(mid, X(row.saved_g));
+  s("rect", { x: xa, y: 7, width: Math.max(1, xb - xa), height: 8, rx: 2,
+              fill: row.saved_g >= 0 ? "var(--pos)" : "var(--neg)" }, svg);
+  const lo = X(row.saved_g - row.saved_unc_g), hi = X(row.saved_g + row.saved_unc_g);
+  s("line", { x1: lo, x2: hi, y1: 11, y2: 11, stroke: "var(--ink)", "stroke-width": 1.5 }, svg);
+  for (const v of [lo, hi]) s("line", { x1: v, x2: v, y1: 6, y2: 16, stroke: "var(--ink)", "stroke-width": 1.5 }, svg);
+  return svg;
+}
+
+function renderSettlements(history) {
+  const rows = history.slice(0, 20);
+  if (!rows.length) { $("settle-table").replaceChildren(h("p", { class: "muted" }, "No settlements yet.")); return; }
+  const scale = Math.max(1e-12, ...rows.map((r) => Math.abs(r.saved_g) + r.saved_unc_g));
+  const body = rows.map((r) => {
+    const tr = h("tr", { class: "clickable" + (r.job_id === selectedSettlement ? " selected" : ""), tabindex: 0 },
+      h("td", {}, r.job_id), h("td", {}, r.user_id), h("td", {}, zoneChip(r.zone)),
+      h("td", { class: "num" }, fmt(r.fee, 4)), h("td", { class: "num" }, fmt(r.rebate, 4)),
+      h("td", { class: "num" }, fmt(r.surcharge, 4)), h("td", { class: "num" }, fmt(r.net, 4)),
+      h("td", {}, savedBar(r, scale)),
+      h("td", { class: "num" }, `${sig(r.saved_g, 3)} ± ${sig(r.saved_unc_g, 2)}`));
+    const pick = () => { selectedSettlement = r.job_id; renderExplain(r); renderSettlements(lastHistory); };
+    tr.addEventListener("click", pick);
+    tr.addEventListener("keydown", (e) => { if (e.key === "Enter") pick(); });
+    return tr;
+  });
+  $("settle-table").replaceChildren(h("table", {},
+    h("thead", {}, h("tr", {}, ...["Job", "User", "Zone"].map((x) => h("th", {}, x)),
+      ...["Fee", "Rebate", "Surcharge", "Net"].map((x) => h("th", { class: "num" }, x)),
+      h("th", {}, "Saved (g CO2e)"), h("th", { class: "num" }, "saved ± unc"))),
+    h("tbody", {}, ...body)));
+}
+
+// ---------------------------------------------------------------------------
+// Panel 5: users
+// ---------------------------------------------------------------------------
+function sparkline(series) {
+  const W = 120, H = 28, svg = s("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
+                                          "aria-label": "balance over the last ledger rows" });
+  if (series.length < 2) { stext(svg, 2, 18, "–", {}); return svg; }
+  const vals = series.map((p) => p[1]);
+  const lo = Math.min(0, ...vals), hi = Math.max(...vals, lo + 1e-9);
+  const X = (i) => 3 + (W - 6) * i / (series.length - 1);
+  const Y = (v) => 3 + (H - 6) * (1 - (v - lo) / (hi - lo));
+  if (lo < 0) s("line", { x1: 0, x2: W, y1: Y(0), y2: Y(0), stroke: "var(--axis)", "stroke-width": 1 }, svg);
+  s("path", { d: path(vals.map((v, i) => [X(i), Y(v)])), fill: "none", stroke: "var(--series-1)", "stroke-width": 1.5 }, svg);
+  s("circle", { cx: X(vals.length - 1), cy: Y(vals[vals.length - 1]), r: 2.5, fill: "var(--series-1)" }, svg);
+  return svg;
+}
+function tierChip(tier) {
+  const colour = { green: "var(--good)", red: "var(--critical)" }[tier] || "var(--neutral)";
+  return h("span", { class: "zone" }, h("span", { class: "dot", style: `background:${colour}` }), tier);
+}
+function renderUsers(state) {
+  $("users-table").replaceChildren(h("table", {},
+    h("thead", {}, h("tr", {}, h("th", {}, "User"), h("th", {}, "Tier"), h("th", { class: "num" }, "Balance"),
+      h("th", { class: "num" }, "Decay so far"), h("th", {}, "Balance over time"))),
+    h("tbody", {}, ...state.users.map((u) => h("tr", {}, h("td", {}, u.user_id), h("td", {}, tierChip(u.tier)),
+      h("td", { class: "num" }, fmt(u.balance, 4)), h("td", { class: "num" }, fmt(u.decay_total, 4)),
+      h("td", {}, sparkline(u.balance_series)))))));
+}
+
+// ---------------------------------------------------------------------------
+// Panel 6: explain one settlement in words (money values are the STORED ones)
+// ---------------------------------------------------------------------------
+function renderExplain(r) {
+  const P = r.settlement_params || {};
+  const k = P.k;
+  const low = r.saved_g - k * r.saved_unc_g;      // pessimistic saving (saved - k x unc)
+  const extra = -r.saved_g - k * r.saved_unc_g;   // pessimistic extra emissions
+  const di = r.i_submit - r.i_run;
+  const verdict = {
+    saving: `pessimistic saving ${sig(low, 3)} g > 0, so the zone is SAVING.`,
+    backfire: `pessimistic saving is not above 0, but pessimistic extra emissions ${sig(extra, 3)} g > 0, so the zone is BACKFIRE.`,
+    dead_zone: `neither the pessimistic saving (${sig(low, 3)} g) nor the pessimistic extra emissions (${sig(extra, 3)} g) is above 0, so the zone is DEAD ZONE: no rebate, no surcharge.`,
+  }[r.zone] || r.zone;
+  const ps = [
+    `Job ${r.job_id} (${r.user_id}, ${r.job_type}). Submitted ${dayhhmm(r.submitted_at)}, ran ${dayhhmm(r.run_start_sim)} to ${hhmm(r.run_end_sim)} sim time.`,
+    `1. Measured energy E = ${sig(r.energy_kwh, 4)} ± ${sig(r.energy_unc_kwh, 2)} kWh (scope: CPU package).`,
+    `2. Counterfactual (the same job started at submission, actual data): i_submit = ${fmt(r.i_submit, 1)} ± ${fmt(r.i_submit_unc, 1)} g/kWh (simulated grid).`,
+    `3. Actual run: i_run = ${fmt(r.i_run, 1)} ± ${fmt(r.i_run_unc, 1)} g/kWh (simulated grid).`,
+    `4. Saved = E × (i_submit − i_run) = ${sig(r.energy_kwh, 4)} × ${fmt(di, 1)} = ${sig(r.saved_g, 4)} g CO2e, ` +
+      `with uncertainty ± ${sig(r.saved_unc_g, 3)} g (energy, counterfactual and run errors combined in quadrature).`,
+    `5. Dead zone k = ${k}: pessimistic saving = saved − k × unc = ${sig(low, 3)} g; pessimistic extra emissions = −saved − k × unc = ${sig(extra, 3)} g.`,
+  ];
+  const money = [
+    `Fee = p × E × i_run with p = ${P.p}: ${fmt(r.fee, 6)} credits (stored, rounded up to a micro-credit).`,
+    r.zone === "saving"
+      ? `Rebate = min(ρ × p × pessimistic saving, γ × fee) = min(${P.rho} × ${P.p} × ${sig(low, 3)}, ${P.gamma} × ${fmt(r.fee, 4)}) → stored ${fmt(r.rebate, 6)} credits (rounded down).`
+      : `Rebate: none outside the saving zone (stored ${fmt(r.rebate, 6)}).`,
+    r.zone === "backfire"
+      ? `Surcharge = σ × p × pessimistic extra emissions with σ = ${P.sigma}: stored ${fmt(r.surcharge, 6)} credits${P.sigma === 0 ? " (σ = 0: surcharge switched off)" : ""}.`
+      : `Surcharge: none outside the backfire zone (stored ${fmt(r.surcharge, 6)}).`,
+    `Net cost = fee + surcharge − rebate = ${fmt(r.net, 6)} credits.`,
+  ];
+  $("explain-body").replaceChildren(
+    ...ps.map((x) => h("p", {}, x)),
+    h("p", { class: "verdict" }, `Zone: ${verdict}`),
+    ...money.map((x) => h("p", {}, x)),
+    h("p", { class: "muted" }, "All parameters are placeholders. The settlement itself was computed on the server by compute_settlement; this box only restates the stored numbers."));
+}
+</script>
+</body>
+</html>
