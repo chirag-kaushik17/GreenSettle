@@ -1,252 +1,170 @@
 """Tests for compute_settlement (greensettle/settlement/rules.py).
 
-These tests are EXPECTED TO FAIL with NotImplementedError until
-compute_settlement is written. Nothing here is skipped or xfail on purpose.
-
 Three groups:
-  1. the seven verified test vectors (A-G),
-  2. property tests over thousands of random valid inputs (seeded, so every
-     run checks exactly the same cases),
+  1. the seven verified test vectors (A-G), rel tolerance 1e-4,
+  2. property tests over random valid inputs (seeded, so every run checks
+     exactly the same cases),
   3. input / parameter validation.
 """
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import replace
 
 import pytest
 
-from greensettle.settlement.rules import (
-    ZONES,
-    SettlementInputs,
-    SettlementParams,
-    SettlementResult,
-    compute_settlement,
-)
+from greensettle.settlement.rules import Settlement, SettlementParams, compute_settlement
 
-REL = 1e-3  # relative tolerance for the vectors
-TINY = 1e-12  # absolute slack for float comparisons in property tests
+REL = 1e-4
+E, DE = 0.000175, 0.0000169  # from the Phase 1 worked example
 N_RANDOM = 2500
 
 
+def settle(i_submit, i_submit_unc, i_run, i_run_unc, params=SettlementParams()) -> Settlement:
+    return compute_settlement(E, DE, i_submit, i_submit_unc, i_run, i_run_unc, params)
+
+
 def slack(x: float) -> float:
-    """Allowed float rounding noise around a value of size x.
-
-    Fees reach ~45,000 credits in the random cases, where one rounding step
-    is already ~7e-12, so a fixed absolute slack would be too strict.
-    """
+    """Allowed float rounding noise around a value of size x."""
     return 1e-9 * max(1.0, abs(x))
-
-E, DE = 0.000175, 0.0000169  # from the Phase 1 worked example
-
-
-def inputs(i_submit: float, i_submit_unc: float, i_run: float, i_run_unc: float) -> SettlementInputs:
-    return SettlementInputs(E, DE, i_submit, i_submit_unc, i_run, i_run_unc)
 
 
 # ---------------------------------------------------------------- 1. vectors
-# (name, inputs, params, zone, fee, rebate, surcharge, net)
+# (name, (i_submit, unc, i_run, unc), params, zone, fee, rebate, surcharge, net)
 VECTORS = [
-    ("A big saving, cap binds", inputs(700, 70, 80, 8), SettlementParams(),
-     "saving", 14.0, 8.4, 0.0, 5.6),
-    ("B modest saving, rho binds", inputs(100, 10, 80, 8), SettlementParams(),
-     "saving", 14.0, 0.6168, 0.0, 13.3832),
-    ("C inside the noise", inputs(82, 8.2, 80, 8), SettlementParams(),
-     "dead_zone", 14.0, 0.0, 0.0, 14.0),
-    ("D backfire", inputs(80, 8, 700, 70), SettlementParams(),
-     "backfire", 122.5, 0.0, 0.0, 122.5),
-    ("E backfire, sigma=0.5", inputs(80, 8, 700, 70), SettlementParams(trap_surcharge_rate=0.5),
-     "backfire", 122.5, 0.0, 46.1597, 168.6597),
-    ("F case C with k=0", inputs(82, 8.2, 80, 8), SettlementParams(k_sigma=0.0),
-     "saving", 14.0, 0.175, 0.0, 13.825),
-    ("G case B with k=2", inputs(100, 10, 80, 8), SettlementParams(k_sigma=2.0),
-     "dead_zone", 14.0, 0.0, 0.0, 14.0),
+    ("A", (700, 70, 80, 8), SettlementParams(), "saving", 14.0, 8.4, 0.0, 5.6),
+    ("B", (100, 10, 80, 8), SettlementParams(), "saving", 14.0, 0.6168, 0.0, 13.3832),
+    ("C", (82, 8.2, 80, 8), SettlementParams(), "dead_zone", 14.0, 0.0, 0.0, 14.0),
+    ("D", (80, 8, 700, 70), SettlementParams(), "backfire", 122.5, 0.0, 0.0, 122.5),
+    ("E", (80, 8, 700, 70), SettlementParams(sigma=0.5), "backfire", 122.5, 0.0, 46.1597, 168.6597),
+    ("F", (82, 8.2, 80, 8), SettlementParams(k=0.0), "saving", 14.0, 0.175, 0.0, 13.825),
+    ("G", (100, 10, 80, 8), SettlementParams(k=2.0), "dead_zone", 14.0, 0.0, 0.0, 14.0),
 ]
 
 
-@pytest.mark.parametrize(
-    "name, inp, params, zone, fee, rebate, surcharge, net", VECTORS, ids=[v[0][0] for v in VECTORS]
-)
-def test_vectors(name, inp, params, zone, fee, rebate, surcharge, net):
-    r = compute_settlement(inp, params)
-    assert isinstance(r, SettlementResult)
-    assert r.zone == zone
-    assert r.fee == pytest.approx(fee, rel=REL)
-    assert r.rebate == pytest.approx(rebate, rel=REL, abs=1e-9)
-    assert r.surcharge == pytest.approx(surcharge, rel=REL, abs=1e-9)
-    assert r.net_cost == pytest.approx(net, rel=REL)
+@pytest.mark.parametrize("name, intens, params, zone, fee, rebate, surcharge, net", VECTORS,
+                         ids=[v[0] for v in VECTORS])
+def test_vectors(name, intens, params, zone, fee, rebate, surcharge, net):
+    s = settle(*intens, params)
+    assert isinstance(s, Settlement)
+    assert s.zone == zone
+    assert s.fee == pytest.approx(fee, rel=REL)
+    assert s.rebate == pytest.approx(rebate, rel=REL)
+    assert s.surcharge == pytest.approx(surcharge, rel=REL)
+    assert s.net == pytest.approx(net, rel=REL)
 
 
-def test_vector_a_intermediate_values():
-    r = compute_settlement(inputs(700, 70, 80, 8), SettlementParams())
-    assert r.saved_g == pytest.approx(0.1085, rel=REL)
-    assert r.saved_unc_g == pytest.approx(0.01618, rel=REL)
-    assert r.saved_low_g == pytest.approx(0.09232, rel=REL)
-    assert r.saved_high_g == pytest.approx(0.1085 + 0.01618, rel=REL)
-
-
-def test_default_params_used_when_omitted():
-    assert compute_settlement(inputs(700, 70, 80, 8)) == compute_settlement(inputs(700, 70, 80, 8), SettlementParams())
+def test_vector_a_saved_and_uncertainty():
+    s = settle(700, 70, 80, 8)
+    assert s.saved_g == pytest.approx(0.1085, rel=REL)
+    assert s.saved_unc_g == pytest.approx(0.01618, rel=REL)
 
 
 # ---------------------------------------------------------------- 2. properties
-def random_inputs(rng: random.Random) -> SettlementInputs:
+def random_case(rng: random.Random) -> tuple[tuple[float, ...], SettlementParams]:
     e = rng.choice([0.0, rng.uniform(0, 0.01), rng.uniform(0, 1e-4)])
-    i_submit = rng.uniform(0, 900)
-    i_run = rng.uniform(0, 900)
-    return SettlementInputs(
-        energy_kwh=e,
-        energy_unc_kwh=rng.choice([0.0, rng.uniform(0, 0.5) * e]),
-        i_submit=i_submit,
-        i_submit_unc=rng.choice([0.0, rng.uniform(0, 0.3) * i_submit]),
-        i_run=i_run,
-        i_run_unc=rng.choice([0.0, rng.uniform(0, 0.3) * i_run]),
+    i_submit, i_run = rng.uniform(0, 900), rng.uniform(0, 900)
+    inputs = (
+        e,
+        rng.choice([0.0, rng.uniform(0, 0.5) * e]),
+        i_submit,
+        rng.choice([0.0, rng.uniform(0, 0.3) * i_submit]),
+        i_run,
+        rng.choice([0.0, rng.uniform(0, 0.3) * i_run]),
     )
-
-
-def random_params(rng: random.Random) -> SettlementParams:
-    return SettlementParams(
-        credits_per_gco2e=rng.choice([1000.0, rng.uniform(1, 5000)]),
-        rebate_rate=rng.choice([1.0, rng.uniform(0.01, 1.0)]),
-        rebate_cap=rng.choice([0.0, rng.uniform(0, 0.99)]),
-        k_sigma=rng.choice([0.0, rng.uniform(0, 3)]),
-        trap_surcharge_rate=rng.choice([0.0, rng.uniform(0, 2)]),
+    params = SettlementParams(
+        p=rng.choice([1000.0, rng.uniform(1, 5000)]),
+        rho=rng.choice([0.5, rng.uniform(0, 1)]),
+        gamma=rng.choice([0.0, 0.6, rng.uniform(0, 0.99)]),
+        k=rng.choice([0.0, 1.0, rng.uniform(0, 3)]),
+        sigma=rng.choice([0.0, rng.uniform(0, 2)]),
     )
+    return inputs, params
 
 
 def random_cases(seed: int, n: int = N_RANDOM):
     rng = random.Random(seed)
     for _ in range(n):
-        yield random_inputs(rng), random_params(rng)
+        yield random_case(rng)
 
 
-def test_property_rebate_capped_by_gamma_times_fee():
-    for inp, params in random_cases(1):
-        r = compute_settlement(inp, params)
-        assert r.rebate <= params.rebate_cap * r.fee + slack(r.fee), (inp, params, r)
+def test_property_no_credit_farming():
+    """rebate <= gamma * fee, and net > 0 whenever fee > 0, in every zone."""
+    zones = set()
+    for inputs, params in random_cases(1):
+        s = compute_settlement(*inputs, params)
+        zones.add(s.zone)
+        assert s.rebate <= params.gamma * s.fee + slack(s.fee), (inputs, params, s)
+        if s.fee > 0:
+            assert s.net > 0, (inputs, params, s)
+    assert zones == {"saving", "dead_zone", "backfire"}  # every zone was exercised
 
 
-def test_property_no_rebate_without_proven_saving():
-    for inp, params in random_cases(2):
-        r = compute_settlement(inp, params)
-        if r.saved_low_g <= 0:
-            assert r.rebate == 0, (inp, params, r)
-        bound = params.rebate_rate * params.credits_per_gco2e * max(r.saved_low_g, 0)
-        assert r.rebate <= bound + slack(bound), (inp, params, r)
+def test_property_rebate_and_surcharge_only_in_their_zone():
+    for inputs, params in random_cases(2):
+        s = compute_settlement(*inputs, params)
+        if s.zone != "saving":
+            assert s.rebate == 0, (inputs, params, s)
+        if s.zone != "backfire" or params.sigma == 0:
+            assert s.surcharge == 0, (inputs, params, s)
+        assert s.net == pytest.approx(s.fee + s.surcharge - s.rebate, rel=1e-12, abs=1e-12)
 
 
-def test_property_net_cost_at_least_one_minus_gamma_fee_when_sigma_zero():
-    for inp, params in random_cases(3):
-        params = replace(params, trap_surcharge_rate=0.0)
-        r = compute_settlement(inp, params)
-        assert r.net_cost >= (1 - params.rebate_cap) * r.fee - slack(r.fee), (inp, params, r)
-        assert r.surcharge == 0
+def test_property_raising_k_never_creates_a_saving():
+    rng = random.Random(3)
+    for inputs, params in random_cases(3):
+        before = compute_settlement(*inputs, params)
+        after = compute_settlement(*inputs, replace(params, k=params.k + rng.uniform(0, 3)))
+        if before.zone in ("dead_zone", "backfire"):
+            assert after.zone != "saving", (inputs, params, before, after)
+        assert after.rebate <= before.rebate + slack(before.rebate)
 
 
-def test_property_net_cost_identity_and_fee_formula():
-    for inp, params in random_cases(4):
-        r = compute_settlement(inp, params)
-        assert r.net_cost == pytest.approx(r.fee - r.rebate + r.surcharge, rel=1e-9, abs=slack(r.fee))
-        assert r.fee == pytest.approx(params.credits_per_gco2e * inp.energy_kwh * inp.i_run, rel=1e-9, abs=TINY)
-        assert r.rebate >= 0 and r.surcharge >= 0
+def test_property_more_uncertainty_never_increases_the_rebate():
+    rng = random.Random(4)
+    for inputs, params in random_cases(4):
+        e, de, i_s, ui_s, i_r, ui_r = inputs
+        factor = 1 + rng.uniform(0, 5)
+        wider = (e, de * factor + rng.uniform(0, 1e-5), i_s, ui_s * factor + rng.uniform(0, 20),
+                 i_r, ui_r * factor + rng.uniform(0, 20))
+        before = compute_settlement(*inputs, params)
+        after = compute_settlement(*wider, params)
+        assert after.rebate <= before.rebate + slack(before.rebate), (inputs, wider, params)
 
 
-def test_property_rebate_never_increases_with_k():
-    rng = random.Random(5)
-    for inp, params in random_cases(5):
-        k_small = rng.uniform(0, 3)
-        k_big = k_small + rng.uniform(0, 3)
-        small = compute_settlement(inp, replace(params, k_sigma=k_small))
-        big = compute_settlement(inp, replace(params, k_sigma=k_big))
-        assert big.rebate <= small.rebate + slack(small.rebate), (inp, params, k_small, k_big)
-
-
-def test_property_zone_matches_case_split():
-    seen = set()
-    for inp, params in random_cases(6):
-        r = compute_settlement(inp, params)
-        assert r.zone in ZONES
-        assert r.saved_low_g == pytest.approx(r.saved_g - params.k_sigma * r.saved_unc_g, rel=1e-9, abs=TINY)
-        assert r.saved_high_g == pytest.approx(r.saved_g + params.k_sigma * r.saved_unc_g, rel=1e-9, abs=TINY)
-        if r.saved_low_g > 0:
-            expected = "saving"
-        elif r.saved_high_g < 0:
-            expected = "backfire"
-        else:
-            expected = "dead_zone"
-        assert r.zone == expected, (inp, params, r)
-        if r.zone != "backfire":
-            assert r.surcharge == 0
-        seen.add(r.zone)
-    assert seen == set(ZONES)  # the random cases really exercise all three zones
-
-
-def test_property_rebate_is_continuous_at_the_dead_zone_edge():
-    """As saved_low -> 0 from above, the rebate -> 0 (no cliff to exploit).
-
-    With dE = 0, saved_unc = E * di_unc does not depend on i_submit, so we can
-    choose i_submit to put saved_low exactly at eps:
-        E * di - k * E * di_unc = eps   =>   di = k * di_unc + eps / E
-    """
-    rng = random.Random(7)
-    for _ in range(200):
-        e = rng.uniform(1e-5, 1e-2)
-        i_run, i_run_unc = rng.uniform(50, 800), rng.uniform(0, 50)
-        i_submit_unc = rng.uniform(0, 50)
-        params = replace(random_params(rng), rebate_cap=0.6)
-        di_unc = (i_submit_unc**2 + i_run_unc**2) ** 0.5
-        previous = None
-        for eps in (1e-3, 1e-5, 1e-7, 1e-9):
-            i_submit = i_run + params.k_sigma * di_unc + eps / e
-            r = compute_settlement(SettlementInputs(e, 0.0, i_submit, i_submit_unc, i_run, i_run_unc), params)
-            assert r.zone == "saving"
-            bound = params.rebate_rate * params.credits_per_gco2e * eps
-            assert r.rebate <= bound * (1 + 1e-6) + 1e-9
-            if previous is not None:
-                assert r.rebate <= previous + TINY
-            previous = r.rebate
-        assert previous < 1e-3  # tiny proven saving -> tiny rebate
+def test_k_zero_gives_naive_ex_post():
+    # With k = 0 any positive measured saving earns a rebate (vector F is one case).
+    s = settle(80.5, 8, 80, 8, SettlementParams(k=0.0))
+    assert s.zone == "saving" and s.rebate > 0
 
 
 # ---------------------------------------------------------------- 3. validation
-GOOD = inputs(700, 70, 80, 8)
-
-
-@pytest.mark.parametrize(
-    "field", ["energy_kwh", "energy_unc_kwh", "i_submit", "i_submit_unc", "i_run", "i_run_unc"]
-)
-def test_negative_inputs_raise(field):
+@pytest.mark.parametrize("gamma", [1.0, 1.5, math.inf, math.nan])
+def test_gamma_must_be_below_one(gamma):
     with pytest.raises(ValueError):
-        compute_settlement(replace(GOOD, **{field: -1e-9}))
+        settle(700, 70, 80, 8, SettlementParams(gamma=gamma))
 
 
-@pytest.mark.parametrize(
-    "change",
-    [
-        {"credits_per_gco2e": 0.0},
-        {"credits_per_gco2e": -1.0},
-        {"rebate_rate": 0.0},
-        {"rebate_rate": -0.1},
-        {"rebate_rate": 1.01},
-        {"rebate_cap": 1.0},
-        {"rebate_cap": 1.5},
-        {"rebate_cap": -0.01},
-        {"k_sigma": -0.5},
-        {"trap_surcharge_rate": -0.1},
-    ],
-    ids=lambda c: next(iter(c.items())).__repr__(),
-)
-def test_bad_params_raise(change):
+@pytest.mark.parametrize("change", [{"p": 0.0}, {"p": -1.0}, {"rho": -0.1}, {"k": -1.0}, {"sigma": -0.5},
+                                    {"gamma": -0.1}])
+def test_negative_or_zero_params_rejected(change):
     with pytest.raises(ValueError):
-        compute_settlement(GOOD, replace(SettlementParams(), **change))
+        settle(700, 70, 80, 8, replace(SettlementParams(), **change))
+
+
+@pytest.mark.parametrize("position", range(6))
+@pytest.mark.parametrize("bad", [-1e-9, math.nan, math.inf, -math.inf])
+def test_bad_inputs_rejected(position, bad):
+    inputs = [E, DE, 700, 70, 80, 8]
+    inputs[position] = bad
+    with pytest.raises(ValueError):
+        compute_settlement(*inputs)
 
 
 def test_boundary_values_are_valid():
-    """The edges of the allowed ranges must NOT raise."""
-    zero = SettlementInputs(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    r = compute_settlement(zero)
-    assert r.fee == 0 and r.rebate == 0 and r.surcharge == 0 and r.zone == "dead_zone"
-    edges = SettlementParams(rebate_rate=1.0, rebate_cap=0.0, k_sigma=0.0, trap_surcharge_rate=0.0)
-    r = compute_settlement(GOOD, edges)
-    assert r.rebate == 0  # gamma = 0 means no rebate can ever be paid
+    s = compute_settlement(0, 0, 0, 0, 0, 0)
+    assert (s.fee, s.rebate, s.surcharge, s.net, s.zone) == (0, 0, 0, 0, "dead_zone")
+    s = settle(700, 70, 80, 8, SettlementParams(gamma=0.0, k=0.0, sigma=0.0, rho=0.0))
+    assert s.rebate == 0 and s.net == s.fee

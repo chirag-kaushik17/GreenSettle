@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from greensettle.settlement.rules import SettlementParams, SettlementResult
+from greensettle.settlement.rules import Settlement, SettlementParams
 
 MICRO_PER_CREDIT = 1_000_000
 
@@ -37,8 +37,8 @@ class MicroSettlement:
     net: int  # always exactly fee - rebate + surcharge
 
 
-def settlement_to_micro(result: SettlementResult, params: SettlementParams) -> MicroSettlement:
-    """Round a SettlementResult to integer micro-credits, keeping the guarantees.
+def settlement_to_micro(result: Settlement, params: SettlementParams) -> MicroSettlement:
+    """Round a Settlement to integer micro-credits, keeping the guarantees.
 
     1. fee and surcharge are rounded to the nearest micro-credit.
     2. The rebate is rounded too, but then limited to floor(gamma x fee_micro).
@@ -50,7 +50,7 @@ def settlement_to_micro(result: SettlementResult, params: SettlementParams) -> M
        adds up exactly in the ledger.
     """
     fee = to_micro(result.fee)
-    cap = math.floor(params.rebate_cap * fee)
+    cap = math.floor(params.gamma * fee)
     rebate = max(0, min(to_micro(result.rebate), cap))
     surcharge = to_micro(result.surcharge)
     return MicroSettlement(fee=fee, rebate=rebate, surcharge=surcharge, net=fee - rebate + surcharge)

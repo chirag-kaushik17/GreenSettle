@@ -1,7 +1,7 @@
 """Ledger (SQLite) and micro-credit conversion tests.
 
 These do NOT call compute_settlement, so they pass before it is written.
-SettlementResult objects are built by hand where needed.
+Settlement objects are built by hand where needed.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from greensettle.ledger import credits, db
-from greensettle.settlement.rules import SettlementParams, SettlementResult
+from greensettle.settlement.rules import Settlement, SettlementParams
 
 T0 = datetime(2026, 11, 2, 9, 0, tzinfo=timezone.utc)
 
@@ -151,9 +151,9 @@ def test_to_micro_and_back():
         credits.to_micro(float("nan"))
 
 
-def result(fee: float, rebate: float, surcharge: float = 0.0) -> SettlementResult:
-    return SettlementResult(fee=fee, rebate=rebate, surcharge=surcharge, net_cost=fee - rebate + surcharge,
-                            saved_g=0, saved_unc_g=0, saved_low_g=0, saved_high_g=0, zone="saving")
+def result(fee: float, rebate: float, surcharge: float = 0.0) -> Settlement:
+    return Settlement(zone="saving", fee=fee, rebate=rebate, surcharge=surcharge,
+                      net=fee + surcharge - rebate, saved_g=0, saved_unc_g=0)
 
 
 def test_settlement_to_micro_vector_a():
@@ -165,7 +165,7 @@ def test_rounding_cannot_push_rebate_over_the_cap():
     # The cap binds: fee = 0.0000029 credits, rebate = 0.6 x fee = 0.00000174.
     # Rounded separately: fee -> 3 micro, rebate -> 2 micro. But 0.6 x 3 = 1.8,
     # so 2 micro would break "rebate <= gamma x fee". It must be cut to 1.
-    m = credits.settlement_to_micro(result(0.0000029, 0.6 * 0.0000029), SettlementParams(rebate_cap=0.6))
+    m = credits.settlement_to_micro(result(0.0000029, 0.6 * 0.0000029), SettlementParams(gamma=0.6))
     assert (m.fee, m.rebate) == (3, 1)
     assert m.rebate <= 0.6 * m.fee
     assert m.net == 2
@@ -178,7 +178,7 @@ def test_property_micro_rounding_keeps_cap_and_identity():
         fee = rng.choice([rng.uniform(0, 1e-4), rng.uniform(0, 50), rng.uniform(0, 50_000)])
         rebate = rng.uniform(0, gamma * fee)
         surcharge = rng.choice([0.0, rng.uniform(0, 100)])
-        m = credits.settlement_to_micro(result(fee, rebate, surcharge), SettlementParams(rebate_cap=gamma))
+        m = credits.settlement_to_micro(result(fee, rebate, surcharge), SettlementParams(gamma=gamma))
         assert all(isinstance(v, int) for v in (m.fee, m.rebate, m.surcharge, m.net))
         assert 0 <= m.rebate <= gamma * m.fee
         assert m.net == m.fee - m.rebate + m.surcharge
