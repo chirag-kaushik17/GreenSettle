@@ -27,6 +27,9 @@ class Settlement:
 
 def compute_settlement(energy_kwh, energy_unc_kwh, i_submit, i_submit_unc,
                        i_run, i_run_unc, params: SettlementParams = SettlementParams()) -> Settlement:
+    for v in (params.p, params.rho, params.gamma, params.k, params.sigma):
+        if not math.isfinite(v):
+            raise ValueError("parameters must be finite")
     if not (0 <= params.gamma < 1):
         raise ValueError("gamma must be in [0, 1) so the rebate can never exceed the fee")
     if params.rho < 0 or params.k < 0 or params.sigma < 0 or params.p <= 0:

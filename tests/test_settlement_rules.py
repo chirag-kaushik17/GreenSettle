@@ -168,3 +168,10 @@ def test_boundary_values_are_valid():
     assert (s.fee, s.rebate, s.surcharge, s.net, s.zone) == (0, 0, 0, 0, "dead_zone")
     s = settle(700, 70, 80, 8, SettlementParams(gamma=0.0, k=0.0, sigma=0.0, rho=0.0))
     assert s.rebate == 0 and s.net == s.fee
+
+
+@pytest.mark.parametrize("field", ["p", "rho", "gamma", "k", "sigma"])
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_non_finite_params_rejected(field, bad):
+    with pytest.raises(ValueError):
+        settle(700, 70, 80, 8, replace(SettlementParams(), **{field: bad}))
