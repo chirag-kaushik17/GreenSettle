@@ -44,4 +44,5 @@ def test_report_has_real_headings_and_marks_pending():
     assert "[UNVERIFIED]" in text and facts.NOVELTY in text
     if facts.e1() is None:
         assert "PENDING (run on the laptop)" in text
-    assert 'TOC' in doc.element.xml and 'PAGE' in doc.sections[-1].footer._element.xml or True
+    assert 'TOC \\o' in doc.element.body.xml  # table of contents field
+    assert 'PAGE' in doc.sections[0].footer._element.xml  # page numbers
