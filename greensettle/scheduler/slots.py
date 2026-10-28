@@ -11,8 +11,9 @@ the forecast's own uncertainty would mostly add waiting time, not save carbon.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable
 
 REASONS = ("deferred", "already_best", "gain_within_noise", "no_window")
@@ -92,4 +93,59 @@ def choose_slot(
       reason            as above
       candidates        tuple of (s_i, f_i, u_i) for i = 0..N, in order
     """
-    raise NotImplementedError("Phase 3: write choose_slot yourself, see the docstring")
+    # 0. Validate before touching the forecast.
+    if request.max_delay_h < 0:
+        raise ValueError("max_delay_h must be >= 0")
+    if request.est_duration_s <= 0:
+        raise ValueError("est_duration_s must be > 0")
+    if params.slot_seconds <= 0:
+        raise ValueError("slot_seconds must be > 0")
+    if params.defer_z < 0:
+        raise ValueError("defer_z must be >= 0")
+
+    # 1. Candidate starts inside the wait window: s_i = t0 + i * slot, i = 0..N.
+    t0 = request.submit_time
+    n = math.floor(request.max_delay_h * 3600 / params.slot_seconds)
+
+    # 2. One forecast call per candidate, for the job's duration.
+    candidates = []
+    for i in range(n + 1):
+        start = t0 + timedelta(seconds=i * params.slot_seconds)
+        mean, unc = forecast_mean(start, start + timedelta(seconds=request.est_duration_s))
+        candidates.append((start, mean, unc))
+
+    # 3. Lowest forecast wins; strict "<" keeps the EARLIEST on ties.
+    best = 0
+    for i in range(1, len(candidates)):
+        if candidates[i][1] < candidates[best][1]:
+            best = i
+
+    # 4. Gain versus starting now, and its noise (independent errors, quadrature).
+    _, f0, u0 = candidates[0]
+    _, fb, ub = candidates[best]
+    saving = f0 - fb
+    noise = math.hypot(u0, ub)
+
+    # 5. Decide: defer only if the gain beats z standard uncertainties.
+    if n == 0:
+        reason = "no_window"
+    elif best == 0:
+        reason = "already_best"
+    elif saving <= params.defer_z * noise:
+        reason = "gain_within_noise"
+    else:
+        reason = "deferred"
+
+    deferred = reason == "deferred"
+    chosen = best if deferred else 0
+    start, mean, unc = candidates[chosen]
+    return SlotChoice(
+        start=start,
+        forecast_mean=mean,
+        forecast_unc=unc,
+        forecast_now_mean=f0,
+        expected_saving=f0 - mean,
+        deferred=deferred,
+        reason=reason,
+        candidates=tuple(candidates),
+    )

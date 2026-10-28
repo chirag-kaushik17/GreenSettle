@@ -11,9 +11,8 @@ settled **after** the run from **measured** energy.
 | 3 Schedule and enforce | API server, slot choice, queue, worker, client, demo | [docs/phase3_explained.md](docs/phase3_explained.md) |
 
 Two functions are written by the student and are the core of the viva:
-`compute_settlement` (Phase 2, written) and `choose_slot` (Phase 3,
-**not written yet**: it raises `NotImplementedError` and its 19 tests fail
-until it is).
+`compute_settlement` (Phase 2) and `choose_slot` (Phase 3). Both are
+implemented.
 
 ## Layout
 
@@ -28,7 +27,7 @@ greensettle/                      <- project root (run all commands from here)
     engine/convert.py             kWh + intensity -> gCO2e with error band
     settlement/rules.py           compute_settlement (student)
     ledger/                       config, migrations, db (decay, allowance, tiers), settle_job, CLI commands
-    scheduler/slots.py            choose_slot (student, not written yet)
+    scheduler/slots.py            choose_slot (student)
     scheduler/{planner,dispatch,queue}.py   plan once, dispatch order, queue/claim/leases
     jobs/                         the fixed job catalog: burn, hash, primes
     server/                       FastAPI app, config, clock, store; python -m greensettle.server
@@ -128,10 +127,9 @@ python -m pytest                                    # hardware tests are skipped
 $env:GREENSETTLE_HARDWARE = "1"; python -m pytest   # also runs tests/test_hardware.py on the laptop
 ```
 
-Until `choose_slot` is written, exactly the 19 tests in `tests/test_slots.py`
-fail, each with `NotImplementedError: Phase 3: write choose_slot yourself`.
-Everything else uses a mock LHM, a fake clock and (where a plan is needed) a
-stand-in `choose_slot` from `tests/fakes.py`.
+The tests use a mock LHM and a fake clock. Some queue and API tests use a
+stand-in `choose_slot` from `tests/fakes.py` so they can fix the plan;
+`tests/test_slots.py` tests the real `choose_slot`.
 
 ## Verification status
 
@@ -148,6 +146,6 @@ the Windows laptop.
 | gaming table | n/a (simulation) | ✓ |
 | server, auth, limits, claim/leases, settlement on result | not yet | ✓ (in-process and real uvicorn) |
 | worker + client over HTTP | not yet | ✓ (mock LHM) |
-| e2e demo steps 3–5 | not yet | ✓ with a stand-in `choose_slot` only |
+| e2e demo (all steps, real `choose_slot`) | not yet | ✓ (mock LHM) |
 | dashboard | not yet | ✓ rendered in headless Chromium (light, dark, 390 px) against a scratch server with stand-in plans |
-| `choose_slot` | not written | not written |
+| `choose_slot` (19 tests) | n/a (pure code) | ✓ |

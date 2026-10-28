@@ -44,8 +44,8 @@ A job with a non-zero exit code is marked `failed` and **not settled**.
 
 ## 2. The slot rule (`choose_slot`), in words
 
-The student writes this function; the tests in `tests/test_slots.py` pin
-down its behaviour.
+The student implemented this function; the tests in `tests/test_slots.py`
+pin down its behaviour.
 
 - The candidates are the submission time and then every 30 minutes, as long
   as the start is still **inside the wait window**. The job may *finish*
@@ -90,6 +90,46 @@ before the run. If the forecast gain is smaller than the forecast's own error,
 deferring mostly adds waiting time without reliably saving carbon. A job
 deferred for a noise-sized gain would also usually land in the dead zone and
 earn nothing.
+
+### choose_slot in words
+
+What `greensettle/scheduler/slots.py` does, step by step, in the order of the
+code:
+
+0. **Validate first.** If `max_delay_h < 0`, `est_duration_s ≤ 0`,
+   `slot_seconds ≤ 0` or `defer_z < 0`, raise `ValueError` before asking the
+   forecast anything.
+1. **Count the candidates.** `n = floor(max_delay_h × 3600 / slot_seconds)`.
+   The starts are t0, t0 + slot, …, t0 + n × slot.
+2. **Ask the forecast once per candidate.** For each start s, call
+   `forecast_mean(s, s + est_duration_s)` and keep the triple (start, mean,
+   uncertainty).
+3. **Find the lowest mean.** Begin with candidate 0 and move to a later
+   candidate only if its mean is *strictly* lower, so ties stay with the
+   earliest start.
+4. **Compute the gain and its noise.** `saving = f0 − f_best` and
+   `noise = hypot(u0, u_best)`.
+5. **Decide, in this order:**
+   - n = 0 → `no_window`;
+   - the best is candidate 0 → `already_best`;
+   - `saving ≤ defer_z × noise` → `gain_within_noise`;
+   - otherwise → `deferred`.
+
+   Only `deferred` moves the job. Every other reason returns candidate 0, so
+   `forecast_mean` = f0 and `expected_saving` = 0. All candidates are
+   returned for the dashboard.
+
+Traced through the code (30-minute slots, z = 1):
+
+- **V1** (4 h): step 1 gives n = 8, so 9 forecast calls. Step 3 moves the best
+  from i0 (600) to i1 (580), then to i4 (150); i5 (also 150) is not strictly
+  lower, so i4 stays. Step 4: saving 450, noise hypot(60, 15) = 61.8. Step 5:
+  n ≠ 0, best ≠ 0, 450 > 61.8 → `deferred`, start t0 + 7200 s.
+- **V2** (4 h): the best moves to i1 (395), then i3 (380). Saving 20, noise
+  hypot(40, 38) = 55.2. Step 5: 20 ≤ 55.2 → `gain_within_noise`, start now.
+- **V6** (4 h): n = 8, so i9 (50 ± 5, at t0 + 4.5 h) is never requested. All
+  nine requested means are 500, so no later candidate is strictly lower and
+  the best stays at i0 → `already_best`, start now.
 
 ## 3. Pull, not push
 

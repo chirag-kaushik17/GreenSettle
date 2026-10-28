@@ -17,8 +17,6 @@ is still fairly dirty; the solar dip is around 13:00):
 
 Deterministic: fixed sim start, fixed curve and forecast seeds, fresh
 temporary database. Only the real run times of the jobs vary slightly.
-Without choose_slot implemented, it stops at step 2 with the
-NotImplementedError message from the server.
 """
 
 from __future__ import annotations
@@ -157,7 +155,7 @@ class Demo:
         reply = self.as_user(user, "POST", "/jobs", self.job | {"max_delay_h": max_delay_h})
         if reply.status == 501:
             say(f"\n   STOP: the server answered 501: {reply.data['detail']}")
-            say("   Everything up to planning works; write choose_slot() and run this again.")
+            say("   The server could not plan the job, so the demo stops here.")
             return None
         if reply.status != 201:
             raise RuntimeError(f"submit failed: HTTP {reply.status} {reply.data}")
