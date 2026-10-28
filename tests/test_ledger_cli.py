@@ -14,7 +14,7 @@ MEASUREMENT = {"job_id": "job-cli-1", "duration_s": 30.0,
 
 
 def run(capsys, tmp_path, *argv, now=NOW):
-    rc = cli.main(["--db", str(tmp_path / "g.db"), "--now", now, *argv])
+    rc = cli.main(["--db", str(tmp_path / "g.db"), "--clock", now, *argv])
     captured = capsys.readouterr()
     return rc, captured.out, captured.err
 
@@ -65,3 +65,17 @@ def test_cli_errors_are_reported_not_crashed(tmp_path, capsys):
     assert rc == 2 and "unknown user" in err
     rc, _, err = run(capsys, tmp_path, "user-add", "bob", now="2026-11-02T08:00:00")
     assert rc == 2 and "time zone" in err
+
+
+def test_clock_from_environment_and_ledger_newest_first(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("GREENSETTLE_CLOCK", "2026-10-15T08:00:00+00:00")
+    db_arg = ["--db", str(tmp_path / "g.db")]
+    assert cli.main([*db_arg, "user-add", "alice"]) == 0
+    assert cli.main([*db_arg, "allowance", "alice"]) == 0  # October, from the env clock
+    assert cli.main([*db_arg, "--clock", "2026-11-15T08:00:00+00:00", "allowance", "alice"]) == 0
+    capsys.readouterr()
+    assert cli.main([*db_arg, "ledger", "alice"]) == 0
+    lines = [l for l in capsys.readouterr().out.splitlines()[1:] if l.strip()]
+    kinds = [l.split()[2] for l in lines]
+    assert kinds == ["allowance", "decay", "allowance"]  # newest first
+    assert "2026-11" in lines[0] and "2026-10" in lines[-1]

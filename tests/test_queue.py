@@ -67,7 +67,7 @@ def test_migrates_an_existing_phase2_database(tmp_path):
     old.close()
 
     conn = store.open_db(path)
-    assert store.schema_version(conn) == 3
+    assert store.schema_version(conn) == 4
     assert ledger_db.balance_micro(conn, "alice") == 100_000_000  # data kept
     assert ledger_db.last_decay_at(conn, "alice") == T0  # decayed_through renamed, value kept
     job_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
@@ -76,7 +76,7 @@ def test_migrates_an_existing_phase2_database(tmp_path):
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"telemetry", "intensity_overrides", "meta"} <= tables
     conn.close()
-    assert store.schema_version(store.open_db(path)) == 3  # reopening is a no-op
+    assert store.schema_version(store.open_db(path)) == 4  # reopening is a no-op
 
 
 def test_v2_to_v3_keeps_settlements_and_drops_low_high(tmp_path):
@@ -96,6 +96,24 @@ def test_v2_to_v3_keeps_settlements_and_drops_low_high(tmp_path):
     row = conn.execute("SELECT * FROM settlements WHERE job_id='j1'").fetchone()
     assert (row["zone"], row["saved_g"], row["saved_unc_g"], row["net_micro"]) == ("saving", 0.1, 0.01, 5)
     assert "saved_low_g" not in row.keys()
+
+
+def test_v4_refuses_old_adjustment_rows_and_leaves_v3_intact(tmp_path):
+    path = tmp_path / "g.db"
+    old = sqlite3.connect(path)
+    old.executescript(migrations.SCHEMA_V1)
+    old.execute("PRAGMA user_version = 1")
+    for step in (migrations.MIGRATION_V2, migrations.MIGRATION_V3):
+        old.executescript(step)
+    old.execute("INSERT INTO users (user_id, created_at, last_decay_at) VALUES ('alice', 'x', 'x')")
+    old.execute("INSERT INTO ledger (user_id, ts, kind, amount_micro) VALUES ('alice', 'x', 'adjustment', 5)")
+    old.commit()
+    old.close()
+    with pytest.raises(sqlite3.IntegrityError):
+        store.open_db(path)
+    check = sqlite3.connect(path)
+    assert check.execute("PRAGMA user_version").fetchone()[0] == 3  # nothing half-done
+    assert check.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 1
 
 
 def test_newer_database_is_refused():

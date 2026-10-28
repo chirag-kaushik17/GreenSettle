@@ -253,7 +253,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--intensity", default="simulated", choices=["simulated"],
                         help="carbon intensity provider (default: simulated)")
     parser.add_argument("--db", default=str(ledger_db.DEFAULT_DB_PATH), help="ledger database (Phase 2)")
-    parser.add_argument("--now", default=None, help="Phase 2: use this ISO time instead of the real clock")
+    parser.add_argument("--clock", default=None,
+                        help="Phase 2: simulated 'now' as ISO time (or set $GREENSETTLE_CLOCK)")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     sub = parser.add_subparsers(dest="command", required=True)
     ledger_commands.register(sub)

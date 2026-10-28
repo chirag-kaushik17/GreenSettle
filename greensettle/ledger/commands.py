@@ -7,15 +7,17 @@
     python -m greensettle.cli balance alice
     python -m greensettle.cli ledger alice [--limit 20]
 
-Global options (before the command): --db PATH, --now ISO.
-The CLI is the only place that reads the real clock (when --now is not
-given); everything below it receives `now` as an argument.
+Global options (before the command): --db PATH, --clock ISO.
+The simulated "now" for demos comes from --clock, else from the environment
+variable GREENSETTLE_CLOCK, else from the real clock. The CLI is the only
+place that reads the real clock; everything below it receives `now`.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -35,8 +37,13 @@ def parse_time(text: str) -> datetime:
     return t
 
 
+CLOCK_ENV_VAR = "GREENSETTLE_CLOCK"
+
+
 def now_of(args: argparse.Namespace) -> datetime:
-    return parse_time(args.now) if args.now else datetime.now(timezone.utc)
+    """--clock ISO, else $GREENSETTLE_CLOCK, else the real clock (UTC)."""
+    text = args.clock or os.environ.get(CLOCK_ENV_VAR)
+    return parse_time(text) if text else datetime.now(timezone.utc)
 
 
 def credits(micro: int) -> str:
@@ -120,8 +127,7 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     if not db.user_exists(conn, args.user):
         raise ValueError(f"unknown user {args.user!r}")
     rows = conn.execute(
-        """SELECT * FROM (SELECT * FROM ledger_with_balance WHERE user_id = ? ORDER BY entry_id DESC LIMIT ?)
-           ORDER BY entry_id""",
+        "SELECT * FROM ledger_with_balance WHERE user_id = ? ORDER BY entry_id DESC LIMIT ?",  # newest first
         (args.user, args.limit),
     ).fetchall()
     print(f"{'id':>5}  {'time (UTC)':25}  {'kind':10}  {'amount':>16}  {'balance':>16}  job / period")
@@ -155,7 +161,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("user")
     p.set_defaults(func=cmd_balance)
 
-    p = sub.add_parser("ledger", help="a user's latest ledger rows with running balance")
+    p = sub.add_parser("ledger", help="a user's ledger rows, newest first, with running balance")
     p.add_argument("user")
     p.add_argument("--limit", type=int, default=20, help="how many rows (default 20)")
     p.set_defaults(func=cmd_ledger)

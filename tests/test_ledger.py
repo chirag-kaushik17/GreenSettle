@@ -61,8 +61,9 @@ def test_ledger_rejects_update_and_delete(conn):
 
 
 def test_kind_check_and_integer_amounts_enforced_by_sqlite(conn):
-    with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("INSERT INTO ledger (user_id, ts, kind, amount_micro) VALUES ('alice', 'x', 'gift', 1)")
+    for kind in ("gift", "adjustment"):  # only the five spec kinds are allowed
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO ledger (user_id, ts, kind, amount_micro) VALUES ('alice', 'x', ?, 1)", (kind,))
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO ledger (user_id, ts, kind, amount_micro) VALUES ('alice', 'x', 'fee', 1.5)")
     with pytest.raises(sqlite3.IntegrityError):  # foreign key: unknown user
@@ -76,8 +77,9 @@ def test_unique_job_kind_enforced_by_sqlite(conn):
 
 
 def test_append_entry_validation(conn):
+    assert db.ENTRY_KINDS == ("allowance", "decay", "fee", "rebate", "surcharge")
     with pytest.raises(ValueError):
-        db.append_entry(conn, "alice", T0, "gift", 1)
+        db.append_entry(conn, "alice", T0, "adjustment", 1)
     with pytest.raises(TypeError):
         db.append_entry(conn, "alice", T0, "fee", -1.5)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="unknown user"):
@@ -87,7 +89,7 @@ def test_append_entry_validation(conn):
 def test_immediate_rolls_back_everything_on_error(conn):
     with pytest.raises(RuntimeError):
         with db.immediate(conn):
-            db.append_entry(conn, "alice", T0, "adjustment", 5 * M)
+            db.append_entry(conn, "alice", T0, "rebate", 5 * M)
             raise RuntimeError("boom")
     assert db.balance_micro(conn, "alice") == 0
 
@@ -120,7 +122,7 @@ def test_balance_is_sum_and_view_gives_running_balance(conn):
 def test_no_float_drift_over_many_entries(conn):
     with db.immediate(conn):
         for _ in range(10_000):
-            db.append_entry(conn, "alice", T0, "adjustment", credits.to_micro(0.1))
+            db.append_entry(conn, "alice", T0, "rebate", credits.to_micro(0.1))
     assert db.balance_micro(conn, "alice") == 1000 * M
     total = 0.0
     for _ in range(10_000):
@@ -168,7 +170,7 @@ def test_decay_updates_last_decay_at_even_without_a_row(conn):
 
 def test_debt_does_not_decay(conn):
     with db.immediate(conn):
-        db.append_entry(conn, "alice", T0, "adjustment", -30 * M)
+        db.append_entry(conn, "alice", T0, "fee", -30 * M, job_id="debt")
     assert db.apply_decay(conn, "alice", T0 + 90 * DAY) == 0
     assert db.balance_micro(conn, "alice") == -30 * M
     assert db.last_decay_at(conn, "alice") == T0 + 90 * DAY
@@ -249,7 +251,7 @@ def test_allowance_periods_are_per_user(conn):
 
 def test_allowance_helps_a_user_recover_from_debt(conn):
     with db.immediate(conn):
-        db.append_entry(conn, "alice", T0, "adjustment", -30 * M)
+        db.append_entry(conn, "alice", T0, "fee", -30 * M, job_id="debt")
     assert db.tier_of_user(conn, "alice").name == "red"
     db.grant_allowance(conn, "alice", T0, period="2026-11")
     assert db.balance_micro(conn, "alice") == 70 * M

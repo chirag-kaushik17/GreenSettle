@@ -3,7 +3,7 @@
 Design rules (each one is enforced by the database itself, not just by
 this Python code):
   - The ledger table is APPEND-ONLY: triggers make UPDATE and DELETE fail.
-    Mistakes are corrected with a new 'adjustment' entry, like in accounting.
+    History is never rewritten; every change is a new row.
   - A balance is NEVER stored. It is always SUM(amount_micro) over a user's
     entries, so it cannot disagree with the history.
   - Amounts are INTEGER micro-credits (see credits.py); a CHECK constraint
@@ -35,7 +35,7 @@ from greensettle.ledger.credits import MICRO_PER_CREDIT, to_micro
 
 DEFAULT_DB_PATH = Path("data") / "greensettle.db"
 
-ENTRY_KINDS = ("allowance", "fee", "rebate", "surcharge", "decay", "adjustment")
+ENTRY_KINDS = ("allowance", "decay", "fee", "rebate", "surcharge")
 
 
 

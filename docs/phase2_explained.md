@@ -116,8 +116,8 @@ Vector A becomes fee 14,000,000, rebate 8,400,000 and net 5,600,000 micro-credit
 | atomic operations | every operation runs in one `BEGIN IMMEDIATE` transaction |
 | deterministic | every function takes `now`; only the CLI reads the real clock |
 
-Row kinds: `allowance` (+), `fee` (−), `rebate` (+), `surcharge` (−),
-`decay` (−). The schema also allows `adjustment` for manual corrections.
+Row kinds: exactly `allowance` (+), `decay` (−), `fee` (−), `rebate` (+),
+`surcharge` (−). The database's CHECK constraint rejects anything else.
 Balances may go negative (debt). The user is then in the red tier until the
 next allowance.
 
@@ -177,11 +177,13 @@ python -m greensettle.cli allowance alice [--period 2026-11] [--amount 100]
 python -m greensettle.cli settle data/measurements/<job>.json --user alice \
     --submit-time 2026-11-02T19:00:00+00:00 --run-time 2026-11-02T13:00:00+00:00
 python -m greensettle.cli balance alice
-python -m greensettle.cli ledger alice [--limit 20]
+python -m greensettle.cli ledger alice [--limit 20]      # newest first
 ```
 
-Global options: `--db` (default `data/greensettle.db`) and `--now ISO` (use a
-fixed time instead of the real clock; times must include a time zone).
+Global options: `--db` (default `data/greensettle.db`) and `--clock ISO`, the
+simulated "now" for demos. Without `--clock`, the environment variable
+`GREENSETTLE_CLOCK` is used, and without that the real clock. Times must
+include a time zone (`+00:00`, `Z` or e.g. `+05:30`).
 `settle` takes i_run and i_submit from the simulated curve, as the mean over
 the job's duration starting at each time. It uses the un-forced curve: a
 forced green/dirty state would give both times the same value.

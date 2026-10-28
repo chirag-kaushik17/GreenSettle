@@ -11,6 +11,10 @@ The version is kept in SQLite's built-in `PRAGMA user_version`:
              dashboard can compute saved - k x unc from saved_g, saved_unc_g
              and the k stored in params_json); UNIQUE(job_id, kind) on the
              ledger so a job can be charged only once.
+  version 4  the ledger table is rebuilt so its CHECK allows exactly the five
+             row kinds of the spec (allowance, decay, fee, rebate, surcharge);
+             'adjustment' is no longer accepted. If an old database contains
+             an adjustment row the whole step fails and the file stays at v3.
 
 Each step after version 1 runs inside one transaction, so a crash half-way
 leaves the database at the previous version, never in between. Never edit a
@@ -21,7 +25,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS users (
@@ -187,6 +191,63 @@ COMMIT;
 """
 
 
+MIGRATION_V4 = """
+BEGIN;
+DROP VIEW ledger_with_balance;
+DROP TRIGGER ledger_no_update;
+DROP TRIGGER ledger_no_delete;
+
+CREATE TABLE ledger_v4 (
+    entry_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL REFERENCES users(user_id),
+    ts           TEXT NOT NULL,
+    kind         TEXT NOT NULL CHECK (kind IN ('allowance','decay','fee','rebate','surcharge')),
+    amount_micro INTEGER NOT NULL CHECK (typeof(amount_micro) = 'integer'),
+    job_id       TEXT NULL,
+    period_key   TEXT NULL,
+    note         TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO ledger_v4 SELECT entry_id, user_id, ts, kind, amount_micro, job_id, period_key, note FROM ledger;
+DROP TABLE ledger;
+ALTER TABLE ledger_v4 RENAME TO ledger;
+
+CREATE UNIQUE INDEX ledger_one_per_period ON ledger (user_id, kind, period_key) WHERE period_key IS NOT NULL;
+CREATE UNIQUE INDEX ledger_one_per_job ON ledger (job_id, kind) WHERE job_id IS NOT NULL;
+CREATE INDEX ledger_by_user ON ledger (user_id, entry_id);
+
+CREATE TRIGGER ledger_no_update BEFORE UPDATE ON ledger
+BEGIN
+    SELECT RAISE(ABORT, 'ledger is append-only: UPDATE is not allowed');
+END;
+CREATE TRIGGER ledger_no_delete BEFORE DELETE ON ledger
+BEGIN
+    SELECT RAISE(ABORT, 'ledger is append-only: DELETE is not allowed');
+END;
+
+CREATE VIEW ledger_with_balance AS
+SELECT
+    entry_id, user_id, ts, kind, amount_micro, job_id, period_key, note,
+    SUM(amount_micro) OVER (
+        PARTITION BY user_id ORDER BY entry_id
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS balance_micro
+FROM ledger;
+
+PRAGMA user_version = 4;
+COMMIT;
+"""
+
+
+def _run_step(conn: sqlite3.Connection, script: str) -> None:
+    """Run one migration script; on any error undo it completely."""
+    try:
+        conn.executescript(script)
+    except sqlite3.Error:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
+
 def schema_version(conn: sqlite3.Connection) -> int:
     return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
@@ -204,9 +265,12 @@ def migrate(conn: sqlite3.Connection) -> int:
         conn.execute("PRAGMA user_version = 1")
         version = 1
     if version == 1:
-        conn.executescript(MIGRATION_V2)
+        _run_step(conn, MIGRATION_V2)
         version = 2
     if version == 2:
-        conn.executescript(MIGRATION_V3)
+        _run_step(conn, MIGRATION_V3)
         version = 3
+    if version == 3:
+        _run_step(conn, MIGRATION_V4)
+        version = 4
     return version
