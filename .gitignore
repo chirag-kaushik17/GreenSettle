@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 # Runtime output (idle calibration, measurements, demo state) stays local.
 data/
+greensettle.zip

@@ -150,3 +150,18 @@ def test_run_job_with_mock_sensor(mock_lhm):
     assert m.job_cpu_s > 1.0  # two workers busy for 1.5 s each
     assert m.split.job_j > 0
     assert m.uncertainty.combined_kwh > 0
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "wait4"), reason="exact OS CPU totals need os.wait4 (POSIX)")
+def test_run_job_counts_the_final_slice_of_cpu_time(mock_lhm):
+    # 2 workers x 2 s = 4.0 CPU-s of burning (plus interpreter start-up). Before
+    # the os.wait4 fix the last <= 0.25 s of every process was lost.
+    idle = meter.IdleCalibration(mean_w=5.0, std_w=0.2, samples=30, seconds=30, measured_at="x")
+    m = meter.run_job(
+        [sys.executable, str(ROOT / "tools" / "burn.py"), "--seconds", "2", "--threads", "2"],
+        LhmClient(mock_lhm.url).package_watts,
+        idle,
+        meter.MeterConfig(poll_interval_s=0.5),
+        cpu_poll_s=0.25,
+    )
+    assert m.job_cpu_s >= 0.97 * 4.0

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import statistics
 import subprocess
 import threading
@@ -294,8 +295,10 @@ class ProcessTreeCpuTracker:
     Processes are keyed by (pid, create_time) so that a PID reused by the OS
     for an unrelated new process is not confused with the old one.
 
-    Limitation: a child that starts AND exits between two polls (default
-    0.25 s apart) is never seen, so very short-lived children are undercounted.
+    Limitations: a child that starts AND exits between two polls (default
+    0.25 s apart) is never seen, and the last <= 0.25 s of every process is
+    missed. run_job corrects for this with the OS's final numbers where the
+    OS provides them (see _reap_if_exited).
     """
 
     def __init__(self, root_pid: int) -> None:
@@ -483,6 +486,29 @@ class JobMeasurement:
     midpoint_utc: datetime  # used to look up carbon intensity
 
 
+def _reap_if_exited(proc: subprocess.Popen) -> tuple[bool, float]:
+    """Check (without blocking) whether the job's root process has exited.
+
+    Returns (exited, os_cpu_s). os_cpu_s is the operating system's own FINAL
+    count of CPU seconds, or 0.0 when the OS cannot tell us.
+
+    Why this exists: the psutil tracker only sees a process while it is alive,
+    so the last <= cpu_poll_s of every process is lost, and once a process has
+    exited psutil cannot read it any more (polling again after exit adds
+    nothing; this was tested). On Linux/macOS, os.wait4() reaps the process
+    AND returns its resource usage, which includes every descendant it waited
+    for (e.g. the multiprocessing workers that burn.py joins). Windows has no
+    wait4, so there we return 0.0 and rely on the tracker alone.
+    """
+    if hasattr(os, "wait4"):
+        pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
+        if pid == 0:  # still running
+            return False, 0.0
+        proc.returncode = os.waitstatus_to_exitcode(status)  # we reaped it, so tell Popen
+        return True, usage.ru_utime + usage.ru_stime
+    return proc.poll() is not None, 0.0
+
+
 def new_job_id() -> str:
     return datetime.now(timezone.utc).strftime("job-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:6]
 
@@ -515,10 +541,14 @@ def run_job(
         sampler.stop(final_sample=False)
         raise
     tracker = ProcessTreeCpuTracker(proc.pid)
+    os_cpu_s = 0.0
     try:
         while True:
-            tracker.poll()  # poll BEFORE checking exit, to catch the final CPU time
-            if proc.poll() is not None:
+            # The last poll before exit can be up to cpu_poll_s old, so the
+            # tracker misses the final slice of each process (see _reap_if_exited).
+            tracker.poll()
+            exited, os_cpu_s = _reap_if_exited(proc)
+            if exited:
                 break
             time.sleep(cpu_poll_s)
     except KeyboardInterrupt:
@@ -538,8 +568,12 @@ def run_job(
     package_j = integrate_trapezoid(samples)
     package_left_j = integrate_left_riemann(samples)
     system_busy = busy_after - busy_before
+    # Both numbers are LOWER bounds of the true job CPU time: the tracker misses
+    # each process's last poll interval, and the OS figure misses descendants
+    # that nobody waited for (orphans). So the larger one is the better estimate.
+    job_cpu_s = max(tracker.total_cpu_s, os_cpu_s)
     split = split_energy(
-        package_j, idle.mean_w, duration_s, tracker.total_cpu_s, system_busy, config.platform_overhead_w
+        package_j, idle.mean_w, duration_s, job_cpu_s, system_busy, config.platform_overhead_w
     )
     unc = estimate_uncertainty(
         package_kwh=joules_to_kwh(package_j),
@@ -565,7 +599,7 @@ def run_job(
         duration_s=duration_s,
         sampler=stats,
         split=split,
-        job_cpu_s=tracker.total_cpu_s,
+        job_cpu_s=job_cpu_s,
         system_busy_cpu_s=system_busy,
         uncertainty=unc,
         midpoint_utc=started_wall + (ended_wall - started_wall) / 2,
