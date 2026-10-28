@@ -14,9 +14,9 @@ A job may start only if
   - fewer than max_concurrent_jobs jobs are running in total, AND
   - its user has fewer running jobs than their tier allows.
 
-Tiers come from the user's ledger balance (Phase 2). Their definitions are
-NOT specified yet, so callers pass a `tier_of(user_id)` function;
-PLACEHOLDER_TIER is used until the real tiers exist.
+Tiers come from the user's ledger balance after decay (Phase 2, see
+greensettle/ledger/config.py). These functions stay pure: callers pass a
+`tier_of(user_id)` function, so tests can use any tier table.
 """
 
 from __future__ import annotations
@@ -25,24 +25,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Mapping, Sequence
 
+from greensettle.ledger.config import TierInfo
+
 DEFAULT_MAX_CONCURRENT_JOBS = 2  # PLACEHOLDER: this laptop runs at most 2 jobs at once
 
-
-@dataclass(frozen=True)
-class TierInfo:
-    name: str
-    priority: int  # higher runs first
-    max_concurrent: int  # running jobs allowed per user in this tier
-
-
-# PLACEHOLDER until the Phase 2 tier rules are specified: everyone is equal.
-PLACEHOLDER_TIER = TierInfo(name="default", priority=0, max_concurrent=1)
-
 TierOf = Callable[[str], TierInfo]
-
-
-def placeholder_tier_of(user_id: str) -> TierInfo:
-    return PLACEHOLDER_TIER
 
 
 @dataclass(frozen=True)

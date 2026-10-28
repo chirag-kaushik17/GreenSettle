@@ -11,107 +11,39 @@ this Python code):
   - The clock is injected: every function takes `now` (a timezone-aware
     datetime) instead of calling datetime.now(), so tests and experiments
     are deterministic.
+  - Every operation is ONE atomic transaction started with BEGIN IMMEDIATE.
+  - Decay is LAZY: it is applied to a user right before every write that
+    changes their balance (allowance, settlement), never by a background job.
+  - Balances may go negative (debt). The user is then in the red tier, and
+    the next monthly allowance helps them recover.
 """
 
 from __future__ import annotations
 
+import math
+import re
 import sqlite3
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
-from greensettle.ledger.credits import to_micro
+from greensettle.ledger import migrations
+from greensettle.ledger.config import DEFAULT_CONFIG, LedgerConfig, TierInfo, tier_for
+from greensettle.ledger.credits import MICRO_PER_CREDIT, to_micro
 
 DEFAULT_DB_PATH = Path("data") / "greensettle.db"
 
 ENTRY_KINDS = ("allowance", "fee", "rebate", "surcharge", "decay", "adjustment")
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    user_id         TEXT PRIMARY KEY,
-    created_at      TEXT NOT NULL,
-    decayed_through TEXT NOT NULL      -- decay has been applied up to this moment
-);
-
-CREATE TABLE IF NOT EXISTS ledger (
-    entry_id     INTEGER PRIMARY KEY AUTOINCREMENT,   -- also gives the order of entries
-    user_id      TEXT NOT NULL REFERENCES users(user_id),
-    ts           TEXT NOT NULL,
-    kind         TEXT NOT NULL CHECK (kind IN ('allowance','fee','rebate','surcharge','decay','adjustment')),
-    amount_micro INTEGER NOT NULL CHECK (typeof(amount_micro) = 'integer'),
-    job_id       TEXT NULL,
-    period_key   TEXT NULL,
-    note         TEXT NOT NULL DEFAULT ''
-);
-
--- At most one entry per (user, kind, period): makes grant_allowance idempotent.
-CREATE UNIQUE INDEX IF NOT EXISTS ledger_one_per_period
-    ON ledger (user_id, kind, period_key) WHERE period_key IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS ledger_by_user ON ledger (user_id, entry_id);
-
--- Append-only: any UPDATE or DELETE on the ledger is rejected.
-CREATE TRIGGER IF NOT EXISTS ledger_no_update BEFORE UPDATE ON ledger
-BEGIN
-    SELECT RAISE(ABORT, 'ledger is append-only: UPDATE is not allowed, add an adjustment entry');
-END;
-
-CREATE TRIGGER IF NOT EXISTS ledger_no_delete BEFORE DELETE ON ledger
-BEGIN
-    SELECT RAISE(ABORT, 'ledger is append-only: DELETE is not allowed, add an adjustment entry');
-END;
-
--- Every entry with the user's balance right after it (a running total,
--- computed by a window function; nothing is stored).
-CREATE VIEW IF NOT EXISTS ledger_with_balance AS
-SELECT
-    entry_id, user_id, ts, kind, amount_micro, job_id, period_key, note,
-    SUM(amount_micro) OVER (
-        PARTITION BY user_id ORDER BY entry_id
-        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-    ) AS balance_micro
-FROM ledger;
-
--- Minimal on purpose; Phase 3 (scheduler) will extend it.
-CREATE TABLE IF NOT EXISTS jobs (
-    job_id            TEXT PRIMARY KEY,
-    user_id           TEXT NOT NULL REFERENCES users(user_id),
-    submitted_at      TEXT NOT NULL,
-    declared_window_h REAL,
-    i_submit          REAL NOT NULL,
-    i_submit_unc      REAL NOT NULL,
-    i_submit_source   TEXT
-);
-
--- One row per settled job: every input and output of the rule, for audit.
-CREATE TABLE IF NOT EXISTS settlements (
-    job_id          TEXT PRIMARY KEY REFERENCES jobs(job_id),
-    user_id         TEXT NOT NULL REFERENCES users(user_id),
-    settled_at      TEXT NOT NULL,
-    energy_kwh      REAL NOT NULL,
-    energy_unc_kwh  REAL NOT NULL,
-    i_submit        REAL NOT NULL,
-    i_submit_unc    REAL NOT NULL,
-    i_run           REAL NOT NULL,
-    i_run_unc       REAL NOT NULL,
-    saved_g         REAL NOT NULL,
-    saved_unc_g     REAL NOT NULL,
-    saved_low_g     REAL NOT NULL,
-    saved_high_g    REAL NOT NULL,
-    zone            TEXT NOT NULL CHECK (zone IN ('saving','dead_zone','backfire')),
-    fee_micro       INTEGER NOT NULL,
-    rebate_micro    INTEGER NOT NULL,
-    surcharge_micro INTEGER NOT NULL,
-    net_micro       INTEGER NOT NULL,
-    params_json     TEXT NOT NULL
-);
-"""
 
 
 # --------------------------------------------------------------------------
-# Connection and time helpers
+# Connection, transactions and time helpers
 # --------------------------------------------------------------------------
 def connect(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
-    """Open (creating if needed) the ledger database and make sure the schema exists.
+    """Open (creating if needed) the database and bring its schema up to date.
 
     Pass ":memory:" for a throwaway in-memory database (used by the tests).
     """
@@ -120,8 +52,27 @@ def connect(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")  # SQLite ignores REFERENCES unless this is on
-    conn.executescript(SCHEMA)
+    migrations.migrate(conn)  # create or upgrade the schema (see migrations.py)
     return conn
+
+
+@contextmanager
+def immediate(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """One atomic write transaction that takes SQLite's write lock straight away.
+
+    Everything inside either commits together or not at all. Taking the lock
+    at the START (IMMEDIATE) means two writers can never both read a value,
+    then both write based on it: the second waits for the first to finish.
+    """
+    if conn.in_transaction:
+        raise RuntimeError("a transaction is already open on this connection")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
 
 
 def to_ts(now: datetime) -> str:
@@ -140,13 +91,14 @@ def from_ts(ts: str) -> datetime:
 # Users and balances
 # --------------------------------------------------------------------------
 def create_user(conn: sqlite3.Connection, user_id: str, now: datetime) -> None:
+    """New users start with balance 0 and last_decay_at = creation time."""
     if not user_id:
         raise ValueError("user_id must not be empty")
     ts = to_ts(now)
     try:
-        with conn:  # a transaction: committed on success, rolled back on error
+        with immediate(conn):
             conn.execute(
-                "INSERT INTO users (user_id, created_at, decayed_through) VALUES (?, ?, ?)",
+                "INSERT INTO users (user_id, created_at, last_decay_at) VALUES (?, ?, ?)",
                 (user_id, ts, ts),
             )
     except sqlite3.IntegrityError as exc:
@@ -157,12 +109,32 @@ def user_exists(conn: sqlite3.Connection, user_id: str) -> bool:
     return conn.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)).fetchone() is not None
 
 
+def last_decay_at(conn: sqlite3.Connection, user_id: str) -> datetime:
+    row = conn.execute("SELECT last_decay_at FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown user {user_id!r}")
+    return from_ts(row["last_decay_at"])
+
+
 def balance_micro(conn: sqlite3.Connection, user_id: str) -> int:
     """The balance is always computed from the history, never stored."""
     row = conn.execute(
         "SELECT COALESCE(SUM(amount_micro), 0) AS total FROM ledger WHERE user_id = ?", (user_id,)
     ).fetchone()
     return int(row["total"])
+
+
+def balance_credits(conn: sqlite3.Connection, user_id: str) -> float:
+    return balance_micro(conn, user_id) / MICRO_PER_CREDIT
+
+
+def tier_of_user(conn: sqlite3.Connection, user_id: str, config: LedgerConfig = DEFAULT_CONFIG) -> TierInfo:
+    """The user's tier from their CURRENT ledger balance.
+
+    It does not apply decay itself (reads never write); the scheduler tick
+    applies decay first, so the balance it sees is already decayed.
+    """
+    return tier_for(balance_credits(conn, user_id), config.tiers)
 
 
 def append_entry(
@@ -175,8 +147,11 @@ def append_entry(
     period_key: str | None = None,
     note: str = "",
 ) -> int:
-    """Append one ledger entry and return its entry_id. Does not commit;
-    callers wrap it in `with conn:` so several entries commit together."""
+    """Append one ledger entry and return its entry_id.
+
+    Does NOT open a transaction: callers wrap it in `immediate(conn)` so
+    several entries (and the decay before them) commit together.
+    """
     if kind not in ENTRY_KINDS:
         raise ValueError(f"kind must be one of {ENTRY_KINDS}, not {kind!r}")
     if not isinstance(amount_micro, int) or isinstance(amount_micro, bool):
@@ -192,30 +167,104 @@ def append_entry(
 
 
 # --------------------------------------------------------------------------
+# Decay (lazy)
+# --------------------------------------------------------------------------
+def decay_amount_micro(balance: int, elapsed_days: float, half_life_days: float) -> int:
+    """How many micro-credits a balance loses over elapsed_days. Pure function.
+
+        decay = floor(balance x (1 - 0.5 ** (elapsed_days / half_life_days)))
+
+    After one half-life half of a positive balance is gone. Only positive
+    balances decay: debt (a negative balance) neither shrinks nor grows.
+    floor() means the user never loses a fraction of a micro-credit more
+    than the formula says.
+    """
+    if balance <= 0 or elapsed_days <= 0:
+        return 0
+    return math.floor(balance * (1 - 0.5 ** (elapsed_days / half_life_days)))
+
+
+def decay_in_transaction(
+    conn: sqlite3.Connection, user_id: str, now: datetime, config: LedgerConfig = DEFAULT_CONFIG
+) -> int:
+    """Apply decay inside an ALREADY OPEN transaction. Returns the micro-credits removed.
+
+    - elapsed <= 0: do nothing at all (the clock never goes backwards).
+    - otherwise: append a negative `decay` row if it is at least 1 micro-credit,
+      and set last_decay_at = now in every case. Rounding losses below one
+      micro-credit are accepted.
+    """
+    elapsed_days = (now - last_decay_at(conn, user_id)).total_seconds() / 86_400
+    if elapsed_days <= 0:
+        return 0
+    decay = decay_amount_micro(balance_micro(conn, user_id), elapsed_days, config.half_life_days)
+    if decay >= 1:
+        append_entry(conn, user_id, now, "decay", -decay, note=f"decay over {elapsed_days:.3f} days")
+    conn.execute("UPDATE users SET last_decay_at = ? WHERE user_id = ?", (to_ts(now), user_id))
+    return decay
+
+
+def apply_decay(conn: sqlite3.Connection, user_id: str, now: datetime, config: LedgerConfig = DEFAULT_CONFIG) -> int:
+    """Apply decay as its own atomic transaction (used by the scheduler tick)."""
+    with immediate(conn):
+        return decay_in_transaction(conn, user_id, now, config)
+
+
+# --------------------------------------------------------------------------
 # Allowance
 # --------------------------------------------------------------------------
-def grant_allowance(
-    conn: sqlite3.Connection, user_id: str, now: datetime, amount: float, period_key: str
-) -> int | None:
-    """Give `amount` credits to a user for one period (e.g. "2026-W44").
+_PERIOD = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
-    Idempotent: granting the same period twice does nothing the second time
-    (returns None), thanks to the UNIQUE index on (user_id, kind, period_key).
-    Returns the new entry_id when credits were granted.
+
+def month_period(now: datetime) -> str:
+    """The calendar-month period ("YYYY-MM", in UTC) that `now` falls in."""
+    to_ts(now)  # rejects naive datetimes
+    return now.astimezone(timezone.utc).strftime("%Y-%m")
+
+
+@dataclass(frozen=True)
+class AllowanceResult:
+    granted: bool  # False means this period was already granted (nothing written)
+    period: str
+    amount_micro: int  # 0 when not granted
+    decay_micro: int  # decay applied just before the grant
+    entry_id: int | None
+    message: str
+
+
+def grant_allowance(
+    conn: sqlite3.Connection,
+    user_id: str,
+    now: datetime,
+    amount: float | None = None,
+    period: str | None = None,
+    config: LedgerConfig = DEFAULT_CONFIG,
+) -> AllowanceResult:
+    """Give a user their allowance for one calendar month, in ONE transaction.
+
+    Defaults: amount = config.allowance_credits (100), period = the month of `now`.
+    Idempotent: if the period was already granted, NOTHING is written (not
+    even decay) and the result says "already granted". The UNIQUE index on
+    (user_id, kind, period_key) enforces this in the database as well.
+    Otherwise decay is applied first, then the allowance row is appended.
     """
-    if amount <= 0:
-        raise ValueError("allowance amount must be positive")
-    if not period_key:
-        raise ValueError("period_key is required (it is what makes the grant idempotent)")
-    try:
-        with conn:
-            return append_entry(conn, user_id, now, "allowance", to_micro(amount),
-                                period_key=period_key, note=f"allowance for {period_key}")
-    except sqlite3.IntegrityError:
+    period = period or month_period(now)
+    if not _PERIOD.match(period):
+        raise ValueError(f"period must look like YYYY-MM, not {period!r}")
+    amount = config.allowance_credits if amount is None else amount
+    if not math.isfinite(amount) or amount <= 0:
+        raise ValueError("allowance amount must be a positive number of credits")
+    amount_micro = to_micro(amount)
+    with immediate(conn):
+        if not user_exists(conn, user_id):
+            raise ValueError(f"unknown user {user_id!r}")
         already = conn.execute(
-            "SELECT 1 FROM ledger WHERE user_id = ? AND kind = 'allowance' AND period_key = ?",
-            (user_id, period_key),
+            "SELECT entry_id FROM ledger WHERE user_id = ? AND kind = 'allowance' AND period_key = ?",
+            (user_id, period),
         ).fetchone()
         if already:
-            return None
-        raise
+            return AllowanceResult(False, period, 0, 0, None, f"already granted for {period}")
+        decay = decay_in_transaction(conn, user_id, now, config)
+        entry_id = append_entry(conn, user_id, now, "allowance", amount_micro,
+                                period_key=period, note=f"allowance for {period}")
+    return AllowanceResult(True, period, amount_micro, decay, entry_id, f"granted {amount:g} credits for {period}")

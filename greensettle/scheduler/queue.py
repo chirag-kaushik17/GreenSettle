@@ -18,20 +18,20 @@ import json
 import math
 import sqlite3
 import uuid
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Iterator
+from typing import Any
 
 from greensettle.intensity.timeline import ActualProvider, ForecastProvider, mean_intensity
 from greensettle.jobs import catalog
 from greensettle.ledger import db as ledger_db
+from greensettle.ledger.config import DEFAULT_CONFIG, LedgerConfig
+from greensettle.ledger.db import immediate  # BEGIN IMMEDIATE transaction (see ledger/db.py)
 from greensettle.scheduler.dispatch import (
     DEFAULT_MAX_CONCURRENT_JOBS,
     QueuedJob,
     TierOf,
     pick_next,
-    placeholder_tier_of,
 )
 from greensettle.scheduler.planner import ChooseFn, Plan, choice_to_dict, plan_job
 from greensettle.scheduler.slots import SchedulerParams, choose_slot
@@ -54,25 +54,6 @@ class QueueFullError(SubmitError):
 
 class JobNotFound(LookupError):
     """No such job, or it belongs to someone else (we do not say which)."""
-
-
-@contextmanager
-def immediate(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    """A write transaction that takes SQLite's write lock straight away.
-
-    With BEGIN IMMEDIATE, two workers claiming at the same moment cannot both
-    read "job X is queued" and both take it: the second one waits until the
-    first has committed, and then sees X as running.
-    """
-    if conn.in_transaction:
-        raise RuntimeError("a transaction is already open on this connection")
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield conn
-    except BaseException:
-        conn.rollback()
-        raise
-    conn.commit()
 
 
 # --------------------------------------------------------------------------
@@ -212,16 +193,26 @@ def claim_job(
     agent_id: str,
     sim_now: datetime,
     real_now: float,
-    tier_of: TierOf = placeholder_tier_of,
+    tier_of: TierOf | None = None,
     max_concurrent_jobs: int = DEFAULT_MAX_CONCURRENT_JOBS,
+    config: LedgerConfig = DEFAULT_CONFIG,
 ) -> Claim | None:
     """Atomically pick the next startable job, mark it running, give it a lease.
 
+    BEGIN IMMEDIATE means two workers claiming at the same moment cannot both
+    read "job X is queued" and both take it: the second one waits until the
+    first has committed, and then sees X as running.
+
+    tier_of defaults to the user's tier from their ledger balance (decay has
+    already been applied by the tick). Tests may pass their own.
     Returns None when nothing is ready or the concurrency limits are reached
     (the API turns that into HTTP 204).
     """
     if not agent_id:
         raise ValueError("agent_id is required")
+    if tier_of is None:
+        def tier_of(user_id: str):  # noqa: E306 (reads the balance inside the same transaction)
+            return ledger_db.tier_of_user(conn, user_id, config)
     with immediate(conn):
         running_total, running_by_user = _running_counts(conn)
         job = pick_next(_queued_jobs(conn), sim_now, running_total, running_by_user, tier_of, max_concurrent_jobs)
@@ -275,17 +266,26 @@ def expire_leases(conn: sqlite3.Connection, real_now: float) -> list[tuple[str, 
 @dataclass(frozen=True)
 class TickReport:
     sim_now: datetime
+    decayed_micro: dict[str, int] = field(default_factory=dict)  # user -> micro-credits removed
     lease_changes: list[tuple[str, str]] = field(default_factory=list)
 
 
-def tick(conn: sqlite3.Connection, sim_now: datetime, real_now: float) -> TickReport:
+def tick(
+    conn: sqlite3.Connection, sim_now: datetime, real_now: float, config: LedgerConfig = DEFAULT_CONFIG
+) -> TickReport:
     """One scheduler tick. The server calls it every real second.
 
-    Phase 3 spec: (1) apply decay for users with ready jobs, so tiers reflect
-    decay; (2) expire leases. Nothing else changes jobs.
-    TODO(decay): step (1) waits for the Phase 2 apply_decay spec.
+    1. Apply decay (at sim_now) for every user who has a READY queued job, so
+       the tier used to order the queue reflects decay. Decay is otherwise
+       lazy (before balance-changing writes); this is the one extra place.
+    2. Expire leases (requeue once, fail the second time).
+    Nothing else changes jobs.
     """
-    return TickReport(sim_now=sim_now, lease_changes=expire_leases(conn, real_now))
+    ready_users = sorted({
+        j.user_id for j in _queued_jobs(conn) if j.planned_start <= sim_now
+    })
+    decayed = {user: ledger_db.apply_decay(conn, user, sim_now, config) for user in ready_users}
+    return TickReport(sim_now=sim_now, decayed_micro=decayed, lease_changes=expire_leases(conn, real_now))
 
 
 # --------------------------------------------------------------------------

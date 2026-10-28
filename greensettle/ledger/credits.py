@@ -34,23 +34,28 @@ class MicroSettlement:
     fee: int
     rebate: int
     surcharge: int
-    net: int  # always exactly fee - rebate + surcharge
+    net: int  # always exactly fee + surcharge - rebate
 
 
 def settlement_to_micro(result: Settlement, params: SettlementParams) -> MicroSettlement:
-    """Round a Settlement to integer micro-credits, keeping the guarantees.
+    """Round a Settlement to integer micro-credits so rounding NEVER favours the user.
 
-    1. fee and surcharge are rounded to the nearest micro-credit.
-    2. The rebate is rounded too, but then limited to floor(gamma x fee_micro).
-       Rounding alone could push the rebate 1 micro-credit ABOVE the cap
-       (e.g. when the cap binds and gamma x fee is not a whole number), which
-       would break the "rebate <= gamma x fee" promise. floor() gives the
-       largest whole number that still respects it.
-    3. net is computed from the ROUNDED parts, so fee - rebate + surcharge
-       adds up exactly in the ledger.
+    1. fee and surcharge round UP   (math.ceil): the user never pays less.
+    2. rebate rounds DOWN           (math.floor): the user never gets more,
+       and it is then capped at floor(gamma x fee_micro), so the promise
+       "rebate <= gamma x fee" still holds after rounding.
+    3. net = fee + surcharge - rebate, computed from the ROUNDED parts, so
+       the ledger rows add up exactly.
+
+    Note: because the inputs are floats, a value such as 14.000000000000002
+    credits rounds up to 14,000,001 micro-credits. That float noise can cost
+    the user at most one micro-credit per row, always in the system's favour.
     """
-    fee = to_micro(result.fee)
+    for value in (result.fee, result.rebate, result.surcharge):
+        if not math.isfinite(value):
+            raise ValueError(f"cannot convert {value!r} credits to micro-credits")
+    fee = math.ceil(result.fee * MICRO_PER_CREDIT)
+    surcharge = math.ceil(result.surcharge * MICRO_PER_CREDIT)
     cap = math.floor(params.gamma * fee)
-    rebate = max(0, min(to_micro(result.rebate), cap))
-    surcharge = to_micro(result.surcharge)
-    return MicroSettlement(fee=fee, rebate=rebate, surcharge=surcharge, net=fee - rebate + surcharge)
+    rebate = max(0, min(math.floor(result.rebate * MICRO_PER_CREDIT), cap))
+    return MicroSettlement(fee=fee, rebate=rebate, surcharge=surcharge, net=fee + surcharge - rebate)

@@ -12,10 +12,11 @@ import pytest
 from greensettle.intensity.provider import SimulatedCurve
 from greensettle.intensity.timeline import ActualProvider, ForecastProvider, mean_intensity
 from greensettle.ledger import db as ledger_db
+from greensettle.ledger import migrations
 from greensettle.scheduler import queue
+from greensettle.ledger.config import TierInfo
 from greensettle.scheduler.dispatch import (
     QueuedJob,
-    TierInfo,
     can_start,
     dispatch_order,
     pick_next,
@@ -56,21 +57,45 @@ def submit(conn, user="alice", sim_now=T0, max_delay_h=4.0, choose=fake_choose, 
 # ---------------------------------------------------------------- migration
 def test_migrates_an_existing_phase2_database(tmp_path):
     path = tmp_path / "g.db"
-    old = ledger_db.connect(path)  # a Phase 2 database: user_version 0
-    ledger_db.create_user(old, "alice", T0)
-    ledger_db.grant_allowance(old, "alice", T0, 100, "2026-W45")
+    # A database exactly as the first Phase 2 code left it: schema v1, user_version 0.
+    old = sqlite3.connect(path)
+    old.executescript(migrations.SCHEMA_V1)
+    old.execute("INSERT INTO users VALUES ('alice', '2026-11-02T06:00:00+00:00', '2026-11-02T06:00:00+00:00')")
+    old.execute("INSERT INTO ledger (user_id, ts, kind, amount_micro, period_key) "
+                "VALUES ('alice', '2026-11-02T06:00:00+00:00', 'allowance', 100000000, '2026-11')")
+    old.commit()
     old.close()
 
     conn = store.open_db(path)
-    assert store.schema_version(conn) == 2
+    assert store.schema_version(conn) == 3
     assert ledger_db.balance_micro(conn, "alice") == 100_000_000  # data kept
+    assert ledger_db.last_decay_at(conn, "alice") == T0  # decayed_through renamed, value kept
     job_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
     assert {"job_type", "status", "lease_expires_real", "plan_json", "declared_window_h"} <= job_cols
     assert "api_key_hash" in {r[1] for r in conn.execute("PRAGMA table_info(users)")}
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"telemetry", "intensity_overrides", "meta"} <= tables
     conn.close()
-    assert store.schema_version(store.open_db(path)) == 2  # reopening is a no-op
+    assert store.schema_version(store.open_db(path)) == 3  # reopening is a no-op
+
+
+def test_v2_to_v3_keeps_settlements_and_drops_low_high(tmp_path):
+    path = tmp_path / "g.db"
+    old = sqlite3.connect(path)
+    old.execute("PRAGMA foreign_keys = ON")
+    old.executescript(migrations.SCHEMA_V1)
+    old.execute("PRAGMA user_version = 1")
+    old.executescript(migrations.MIGRATION_V2)
+    old.execute("INSERT INTO users (user_id, created_at, decayed_through) VALUES ('alice', 'x', 'x')")
+    old.execute("INSERT INTO jobs (job_id, user_id, submitted_at, i_submit, i_submit_unc) VALUES ('j1','alice','x',1,1)")
+    old.execute("INSERT INTO settlements VALUES ('j1','alice','x',1,1,1,1,1,1, 0.1,0.01,0.09,0.11,"
+                "'saving', 10,5,0,5,'{}')")
+    old.commit()
+    old.close()
+    conn = store.open_db(path)
+    row = conn.execute("SELECT * FROM settlements WHERE job_id='j1'").fetchone()
+    assert (row["zone"], row["saved_g"], row["saved_unc_g"], row["net_micro"]) == ("saving", 0.1, 0.01, 5)
+    assert "saved_low_g" not in row.keys()
 
 
 def test_newer_database_is_refused():
@@ -120,8 +145,8 @@ def test_override_timeline_persists_and_cannot_rewrite_history(conn):
 
 
 # ---------------------------------------------------------------- dispatch_order / can_start
-GOLD = TierInfo("gold", priority=2, max_concurrent=2)
-BRONZE = TierInfo("bronze", priority=0, max_concurrent=1)
+GOLD = TierInfo("gold", 100, priority=2, max_concurrent=2)
+BRONZE = TierInfo("bronze", 0, priority=0, max_concurrent=1)
 TIERS = {"alice": BRONZE, "bob": GOLD, "carol": BRONZE}
 
 
@@ -275,7 +300,7 @@ def test_claim_waits_for_the_planned_start(conn):
 def test_claim_respects_global_concurrency(conn):
     for i in range(3):
         submit(conn, user=("alice", "bob", "bob")[i], choose=start_now_choose, job_id=f"j{i}")
-    gold_for_all = lambda u: TierInfo("x", 0, 5)  # noqa: E731
+    gold_for_all = lambda u: TierInfo("x", 0, priority=0, max_concurrent=5)  # noqa: E731
     got = [queue.claim_job(conn, "w", T0, 0.0, gold_for_all, max_concurrent_jobs=2) for _ in range(3)]
     assert [c.job_id for c in got if c] == ["j0", "j1"] and got[2] is None
 
@@ -294,7 +319,7 @@ def test_atomic_claim_two_threads_one_job(tmp_path):
             c = store.open_db(path)  # one connection per thread
             try:
                 barrier.wait()
-                if queue.claim_job(c, agent, T0, 0.0, lambda u: TierInfo("x", 0, 99), 99):
+                if queue.claim_job(c, agent, T0, 0.0, lambda u: TierInfo("x", 0, priority=0, max_concurrent=99), 99):
                     winners.append(agent)
             except BaseException as exc:  # surfaced below
                 errors.append(exc)
@@ -332,3 +357,37 @@ def test_plan_json_is_valid_json(conn):
     submit(conn, job_id="j1")
     raw = conn.execute("SELECT plan_json FROM jobs WHERE job_id='j1'").fetchone()[0]
     assert json.loads(raw)["deferred"] is True
+
+
+# ---------------------------------------------------------------- real tiers and decay at tick time
+M = 1_000_000
+
+
+def test_claim_uses_ledger_tiers_priority_and_limits(conn):
+    # alice: green (100 credits, priority 2, 2 at once); bob: red (0 credits, priority 0, 1 at once)
+    ledger_db.grant_allowance(conn, "alice", T0, period="2026-11")
+    submit(conn, user="bob", choose=start_now_choose, job_id="b1")
+    submit(conn, user="bob", choose=start_now_choose, job_id="b2")
+    submit(conn, user="alice", choose=start_now_choose, job_id="a1")
+    submit(conn, user="alice", choose=start_now_choose, job_id="a2")
+    got = [queue.claim_job(conn, "w", T0, 0.0, max_concurrent_jobs=4) for _ in range(4)]
+    # green alice first (both jobs), then red bob limited to one running job
+    assert [c.job_id if c else None for c in got] == ["a1", "a2", "b1", None]
+
+
+def test_tick_applies_decay_for_users_with_ready_jobs_and_changes_the_tier(conn):
+    ledger_db.grant_allowance(conn, "alice", T0, period="2026-11")
+    ledger_db.grant_allowance(conn, "bob", T0, period="2026-11")
+    submit(conn, user="alice", job_id="a1")  # fake_choose: planned for T0 + 1 h
+    later = T0 + timedelta(days=30)
+    report = queue.tick(conn, later, real_now=0.0)
+    assert report.decayed_micro == {"alice": 50 * M}  # bob has no ready job: not decayed by the tick
+    assert ledger_db.tier_of_user(conn, "alice").name == "standard"
+    assert ledger_db.tier_of_user(conn, "bob").name == "green"
+    assert queue.tick(conn, T0 + H, real_now=0.0).decayed_micro == {"alice": 0}  # time went backwards: no-op
+
+
+def test_tick_ignores_jobs_that_are_not_ready_yet(conn):
+    ledger_db.grant_allowance(conn, "alice", T0, period="2026-11")
+    submit(conn, user="alice", job_id="a1")  # planned for T0 + 1 h
+    assert queue.tick(conn, T0 + timedelta(minutes=30), real_now=0.0).decayed_micro == {}
