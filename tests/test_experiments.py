@@ -29,3 +29,15 @@ def test_e3_small_run_is_deterministic_and_sane():
             assert r["share_deferrals_backfired"] == 0
     perfect = [r for r in a if r["delay_h"] == 6 and r["forecast_error"] == 0.0]
     assert all(r["change_pct"] < 0 for r in perfect)
+
+
+def test_e4_reward_rates_fall_with_k_and_nobody_earns():
+    e4 = load("e4_deadzone")
+    rows = e4.run(jobs=400)
+    assert rows == e4.run(jobs=400)
+    for gain in e4.GAINS:
+        rates = [r["reward_rate"] for r in rows if r["true_gain"] == gain]
+        assert rates == sorted(rates, reverse=True)  # wider dead zone -> never more rewards
+    by = {(r["k"], r["true_gain"]): r for r in rows}
+    assert by[(1.0, 0.0)]["reward_rate"] < by[(1.0, 0.2)]["reward_rate"] < by[(1.0, 0.4)]["reward_rate"]
+    assert all(r["min_net"] > 0 for r in rows)

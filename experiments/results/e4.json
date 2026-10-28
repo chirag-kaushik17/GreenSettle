@@ -1,0 +1,201 @@
+{
+  "experiment": "E4 dead-zone sweep",
+  "simulated": true,
+  "notes": [
+    "noise model simulated: x (1 + N(0, sd)), sd 10% energy, 10% intensity, honest error bars",
+    "i_submit flat simulated 400 g/kWh; 2000 jobs per scenario, seed 11",
+    "true gain 0: every rebate is a false reward",
+    "parameters (placeholders): p=1000, rho=0.5, gamma=0.6, sigma=0"
+  ],
+  "rows": [
+    {
+      "k": 0.0,
+      "true_gain": 0.0,
+      "jobs": 2000,
+      "reward_rate": 0.504,
+      "credits_minted": 12442.388270550986,
+      "mean_net": 210.8222166942902,
+      "min_net": 22.93066876716612
+    },
+    {
+      "k": 0.5,
+      "true_gain": 0.0,
+      "jobs": 2000,
+      "reward_rate": 0.313,
+      "credits_minted": 6004.553581488578,
+      "mean_net": 214.0411340388214,
+      "min_net": 23.900196176816547
+    },
+    {
+      "k": 1.0,
+      "true_gain": 0.0,
+      "jobs": 2000,
+      "reward_rate": 0.1495,
+      "credits_minted": 2530.0676940066537,
+      "mean_net": 215.77837698256235,
+      "min_net": 24.869723586466975
+    },
+    {
+      "k": 1.5,
+      "true_gain": 0.0,
+      "jobs": 2000,
+      "reward_rate": 0.066,
+      "credits_minted": 894.8455679032324,
+      "mean_net": 216.59598804561406,
+      "min_net": 25.36424664704233
+    },
+    {
+      "k": 2.0,
+      "true_gain": 0.0,
+      "jobs": 2000,
+      "reward_rate": 0.0225,
+      "credits_minted": 205.01249186969397,
+      "mean_net": 216.94090458363084,
+      "min_net": 25.36424664704233
+    },
+    {
+      "k": 2.5,
+      "true_gain": 0.0,
+      "jobs": 2000,
+      "reward_rate": 0.003,
+      "credits_minted": 27.74061627703836,
+      "mean_net": 217.02954052142718,
+      "min_net": 25.36424664704233
+    },
+    {
+      "k": 3.0,
+      "true_gain": 0.0,
+      "jobs": 2000,
+      "reward_rate": 0.001,
+      "credits_minted": 4.843600892351485,
+      "mean_net": 217.04098902911952,
+      "min_net": 25.36424664704233
+    },
+    {
+      "k": 0.0,
+      "true_gain": 0.2,
+      "jobs": 2000,
+      "reward_rate": 0.938,
+      "credits_minted": 44271.6049523522,
+      "mean_net": 151.49892618747646,
+      "min_net": 15.32139477305342
+    },
+    {
+      "k": 0.5,
+      "true_gain": 0.2,
+      "jobs": 2000,
+      "reward_rate": 0.8585,
+      "credits_minted": 31548.456828301176,
+      "mean_net": 157.86050024950197,
+      "min_net": 16.259948025932868
+    },
+    {
+      "k": 1.0,
+      "true_gain": 0.2,
+      "jobs": 2000,
+      "reward_rate": 0.715,
+      "credits_minted": 20360.917152283684,
+      "mean_net": 163.45427008751074,
+      "min_net": 17.198501278812316
+    },
+    {
+      "k": 1.5,
+      "true_gain": 0.2,
+      "jobs": 2000,
+      "reward_rate": 0.5235,
+      "credits_minted": 11443.907847319153,
+      "mean_net": 167.91277473999298,
+      "min_net": 18.137054531691764
+    },
+    {
+      "k": 2.0,
+      "true_gain": 0.2,
+      "jobs": 2000,
+      "reward_rate": 0.3145,
+      "credits_minted": 5317.368656444199,
+      "mean_net": 170.97604433543046,
+      "min_net": 19.07560778457121
+    },
+    {
+      "k": 2.5,
+      "true_gain": 0.2,
+      "jobs": 2000,
+      "reward_rate": 0.149,
+      "credits_minted": 2069.33130140963,
+      "mean_net": 172.60006301294774,
+      "min_net": 20.01416103745066
+    },
+    {
+      "k": 3.0,
+      "true_gain": 0.2,
+      "jobs": 2000,
+      "reward_rate": 0.061,
+      "credits_minted": 641.3227088082962,
+      "mean_net": 173.3140673092484,
+      "min_net": 20.291397317633862
+    },
+    {
+      "k": 0.0,
+      "true_gain": 0.4,
+      "jobs": 2000,
+      "reward_rate": 1.0,
+      "credits_minted": 86595.47700508864,
+      "mean_net": 86.9283079951951,
+      "min_net": 7.712120778940722
+    },
+    {
+      "k": 0.5,
+      "true_gain": 0.4,
+      "jobs": 2000,
+      "reward_rate": 0.9975,
+      "credits_minted": 73422.59446791289,
+      "mean_net": 93.51474926378297,
+      "min_net": 8.676200765264364
+    },
+    {
+      "k": 1.0,
+      "true_gain": 0.4,
+      "jobs": 2000,
+      "reward_rate": 0.9915,
+      "credits_minted": 60107.05806196179,
+      "mean_net": 100.17251746675852,
+      "min_net": 9.640280751588005
+    },
+    {
+      "k": 1.5,
+      "true_gain": 0.4,
+      "jobs": 2000,
+      "reward_rate": 0.975,
+      "credits_minted": 46857.22841847939,
+      "mean_net": 106.79743228849972,
+      "min_net": 10.604360737911648
+    },
+    {
+      "k": 2.0,
+      "true_gain": 0.4,
+      "jobs": 2000,
+      "reward_rate": 0.9145,
+      "credits_minted": 34102.98751429285,
+      "mean_net": 113.17455274059299,
+      "min_net": 11.568440724235288
+    },
+    {
+      "k": 2.5,
+      "true_gain": 0.4,
+      "jobs": 2000,
+      "reward_rate": 0.803,
+      "credits_minted": 22405.149115142827,
+      "mean_net": 119.02347194016801,
+      "min_net": 12.53252071055893
+    },
+    {
+      "k": 3.0,
+      "true_gain": 0.4,
+      "jobs": 2000,
+      "reward_rate": 0.6195,
+      "credits_minted": 12643.865001436741,
+      "mean_net": 123.90411399702106,
+      "min_net": 13.496600696882572
+    }
+  ]
+}
