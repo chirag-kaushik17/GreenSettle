@@ -5,3 +5,5 @@ __pycache__/
 # Runtime output (idle calibration, measurements, demo state) stays local.
 data/
 greensettle.zip
+# E1 mock dry runs are never evidence
+experiments/results/e1_mock.*

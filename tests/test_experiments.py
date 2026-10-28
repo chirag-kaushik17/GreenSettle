@@ -41,3 +41,23 @@ def test_e4_reward_rates_fall_with_k_and_nobody_earns():
     by = {(r["k"], r["true_gain"]): r for r in rows}
     assert by[(1.0, 0.0)]["reward_rate"] < by[(1.0, 0.2)]["reward_rate"] < by[(1.0, 0.4)]["reward_rate"]
     assert all(r["min_net"] > 0 for r in rows)
+
+
+def test_e1_mock_dry_run_writes_only_mock_files(tmp_path, capsys):
+    e1 = load("e1_repeatability")
+    rc = e1.main(["--mock-lhm", "--repeats", "2", "--seconds", "1", "--workers", "1",
+                  "--cooldown", "0", "--rest", "0", "--out-dir", str(tmp_path)])
+    assert rc == 0
+    assert "mock results are NOT evidence" in capsys.readouterr().out
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["e1_mock.csv", "e1_mock.json"]
+    import json
+    meta = json.loads((tmp_path / "e1_mock.json").read_text())
+    assert meta["mock"] is True and meta["summary"][0]["runs"] == 2
+
+
+def test_e1_refuses_over_the_60_second_cap(tmp_path):
+    e1 = load("e1_repeatability")
+    import pytest
+    from greensettle.jobs.catalog import CatalogError
+    with pytest.raises(CatalogError):
+        e1.main(["--mock-lhm", "--seconds", "61", "--out-dir", str(tmp_path)])
