@@ -18,7 +18,7 @@ import json
 import logging
 import math
 import random
-from datetime import datetime
+from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import NamedTuple, Protocol
 
@@ -68,8 +68,10 @@ class SimulatedCurve:
         wind_amplitude_g: float = 60.0,
         relative_unc: float = 0.10,  # PLACEHOLDER: +/-10 % on every simulated value
         floor_g: float = 50.0,
+        tz: tzinfo | None = None,  # time zone for "hour of day"; None = this computer's local zone
     ) -> None:
         self.seed = seed
+        self.tz = tz
         self.base_g = base_g
         self.solar_dip_g = solar_dip_g
         self.solar_peak_hour = solar_peak_hour
@@ -93,7 +95,9 @@ class SimulatedCurve:
 
     def curve_value(self, timestamp: datetime) -> float:
         """The un-forced curve value in g/kWh."""
-        local = timestamp.astimezone()  # naive datetimes are treated as local time
+        # Naive datetimes are treated as local time. The server passes an explicit
+        # tz so the curve does not depend on which machine it runs on.
+        local = timestamp.astimezone(self.tz)
         hour = local.hour + local.minute / 60 + local.second / 3600
         solar = self.solar_dip_g * math.exp(-((hour - self.solar_peak_hour) ** 2) / (2 * self.solar_width_h**2))
         hours_since_epoch = timestamp.timestamp() / 3600
