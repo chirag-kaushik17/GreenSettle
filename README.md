@@ -9,6 +9,7 @@ settled **after** the run from **measured** energy.
 | 1 Measure | CPU power → per-job energy ± uncertainty → gCO2e ± error | [docs/phase1_explained.md](docs/phase1_explained.md) |
 | 2 Settle | settlement rule, append-only ledger, decay, tiers, gaming table | [docs/phase2_explained.md](docs/phase2_explained.md) |
 | 3 Schedule and enforce | API server, slot choice, queue, worker, client, demo | [docs/phase3_explained.md](docs/phase3_explained.md) |
+| 4 Show and prove | dashboard, experiments E1/E3/E4, figures, poster, report | [docs/viva_cheatsheet.md](docs/viva_cheatsheet.md) |
 
 Two functions are written by the student and are the core of the viva:
 `compute_settlement` (Phase 2) and `choose_slot` (Phase 3). Both are
@@ -120,6 +121,33 @@ admin token (kept in page memory only; never stored). It polls every 2 s.
 
 One file, no external resources, served with a strict Content-Security-Policy.
 
+## Phase 4: experiments, figures, poster, report
+
+```powershell
+pip install -r requirements-report.txt               # matplotlib, python-docx (only for figures/report)
+
+python experiments\run_offline.py                    # worked examples, gaming table, E3, E4 -> experiments\results\SUMMARY.md
+python -m greensettle.cli calibrate-idle --seconds 30 # on the laptop, machine idle
+python experiments\e1_repeatability.py --repeats 6 --seconds 20 --workers 1,4   # REAL laptop, about 6 min
+python experiments\e1_repeatability.py --mock-lhm --repeats 2 --seconds 2 --cooldown 0 --rest 0   # dry run, NOT evidence
+
+python report\make_figures.py                        # report\figures\*.png (from results files only)
+python report\make_poster.py                         # report\poster.html (+ poster.pdf if Playwright is installed)
+python report\make_report.py                         # report\GreenSettle_report.docx (open in Word, update fields)
+```
+
+- **E3** (simulated) runs the real `choose_slot` over 7 simulated days.
+- **E4** (simulated) sweeps the dead-zone width k.
+- **E1** measures repeatability on the real laptop. Until `e1.json` exists,
+  the poster and report show "PENDING (run on the laptop)". Mock dry runs
+  write `e1_mock.*`, which are never used as evidence.
+- Every number in the figures, poster and report is read from
+  `experiments/results/` or from the code's config, via `report/facts.py`.
+- The poster PDF needs Playwright (`pip install playwright && playwright
+  install chromium`). Otherwise, print `poster.html` from Chrome at
+  420 × 594 mm with background graphics on.
+- For the viva, see [`docs/viva_cheatsheet.md`](docs/viva_cheatsheet.md).
+
 ## Tests
 
 ```powershell
@@ -149,3 +177,6 @@ the Windows laptop.
 | e2e demo (all steps, real `choose_slot`) | not yet | ✓ (mock LHM) |
 | dashboard | not yet | ✓ rendered in headless Chromium (light, dark, 390 px) against a scratch server with stand-in plans |
 | `choose_slot` (19 tests) | n/a (pure code) | ✓ |
+| E3 scheduling, E4 dead zone, worked examples | n/a (simulation) | ✓ results in `experiments/results/` |
+| E1 repeatability | **PENDING**: run on the laptop | dry run only (`--mock-lhm`, not evidence) |
+| figures, poster (A2, 1 page), report (.docx, 9 pages via LibreOffice) | generate again after E1 | ✓ built in the container |
